@@ -59,8 +59,10 @@ Use workflow `.github/workflows/deploy-phase1.yml` to deploy with all Phase 1 va
 ### Workflow inputs
 
 - `region` (default `us-east-1`)
-- `availability_zone` (required, Local Zone AZ like `us-east-1-nyc-1a`)
-- `instance_type` (default `g6.xlarge`)
+- `availability_zone` (optional manual override)
+- `instance_type` (optional manual override)
+- `preferred_instance_types` (priority list for auto-selection)
+- `city` (used to rank nearest zone when multiple options are available)
 - `ssh_cidr` (default `0.0.0.0/0`)
 - `name_prefix` (default `depth-yolo-phase1`)
 - `key_name` (optional)
@@ -70,7 +72,17 @@ Use workflow `.github/workflows/deploy-phase1.yml` to deploy with all Phase 1 va
 ### What the workflow does
 
 1. Generates `deploy/terraform/terraform.auto.tfvars` from the provided inputs.
-2. Runs `terraform init`, `terraform validate`, and `terraform plan`.
-3. Applies changes if `apply_changes=true`.
-4. Optionally copies the repo and starts Docker Compose on EC2 if `deploy_to_ec2=true`.
-5. Publishes deployment output values in the workflow summary.
+2. Runs preflight checks for:
+	- discovers all Local Zones in region
+	- filters to `opted-in` zones
+	- checks offered instance types across opted-in zones
+	- auto-selects best zone+instance based on `preferred_instance_types` priority and nearest distance to `city`
+	- if both `availability_zone` and `instance_type` are provided, validates and uses them as manual override
+3. Runs `terraform init`, `terraform validate`, and `terraform plan`.
+4. Applies changes if `apply_changes=true`.
+5. Optionally copies the repo and starts Docker Compose on EC2 if `deploy_to_ec2=true`.
+6. Publishes deployment output values in the workflow summary.
+
+If preflight fails with "not opted-in", enable the Local Zone in EC2 Console:
+
+- `EC2` -> `Account attributes` -> `Zones` -> opt in the target Local Zone.

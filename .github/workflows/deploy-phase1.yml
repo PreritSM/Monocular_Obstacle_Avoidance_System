@@ -10,12 +10,23 @@ on:
         type: string
       availability_zone:
         description: "Local Zone AZ (example: us-east-1-nyc-1a)"
-        required: true
+        required: false
+        default: ""
         type: string
       instance_type:
         description: EC2 instance type
+        required: false
+        default: ""
+        type: string
+      preferred_instance_types:
+        description: "Priority-ordered instance types for auto-selection"
         required: true
-        default: g6.xlarge
+        default: g6.xlarge,g5.xlarge,g5.2xlarge,g4dn.xlarge,g4dn.2xlarge
+        type: string
+      city:
+        description: "City hint for nearest-zone ranking"
+        required: true
+        default: Henrietta, NY
         type: string
       ssh_cidr:
         description: SSH ingress CIDR for EC2 security group
@@ -43,7 +54,7 @@ on:
       deploy_to_ec2:
         description: Copy repository and start Docker stack on EC2 (true/false)
         required: true
-        default: "false"
+        default: "true"
         type: choice
         options:
           - "true"
@@ -76,12 +87,166 @@ jobs:
       - name: Verify AWS caller identity
         run: aws sts get-caller-identity
 
+      - name: Setup Python for preflight
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install preflight dependencies
+        run: python -m pip install --upgrade pip boto3
+
+      - name: Preflight select zone and instance
+        id: preflight
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import math
+          import os
+          import sys
+
+          import boto3
+
+          region = os.environ["INPUT_REGION"]
+          manual_zone = os.environ["INPUT_AVAILABILITY_ZONE"].strip()
+          manual_instance = os.environ["INPUT_INSTANCE_TYPE"].strip()
+          city = os.environ["INPUT_CITY"].strip()
+          preferred_types = [x.strip() for x in os.environ["INPUT_PREFERRED_INSTANCE_TYPES"].split(",") if x.strip()]
+
+          city_coords = {
+            "Henrietta, NY": (43.0387, -77.6127),
+            "New York, NY": (40.7128, -74.0060),
+            "Boston, MA": (42.3601, -71.0589),
+            "Philadelphia, PA": (39.9526, -75.1652),
+          }
+          metro_coords = {
+            "nyc": (40.7128, -74.0060),
+            "bos": (42.3601, -71.0589),
+            "phl": (39.9526, -75.1652),
+            "atl": (33.7490, -84.3880),
+            "mia": (25.7617, -80.1918),
+            "msp": (44.9778, -93.2650),
+            "chi": (41.8781, -87.6298),
+            "dfw": (32.7767, -96.7970),
+            "iah": (29.7604, -95.3698),
+            "mci": (39.0997, -94.5786),
+            "bue": (-34.6037, -58.3816),
+            "lim": (-12.0464, -77.0428),
+            "scl": (-33.4489, -70.6693),
+          }
+
+          def haversine_km(a, b):
+            r = 6371
+            lat1, lon1 = map(math.radians, a)
+            lat2, lon2 = map(math.radians, b)
+            dlat = lat2 - lat1
+            dlon = lon2 - lon1
+            x = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+            return 2 * r * math.asin(math.sqrt(x))
+
+          def zone_distance(zone_name):
+            base = city_coords.get(city)
+            if base is None:
+              return None
+            parts = zone_name.split("-")
+            if len(parts) < 4:
+              return None
+            metro = parts[3]
+            coords = metro_coords.get(metro)
+            if coords is None:
+              return None
+            return haversine_km(base, coords)
+
+          ec2 = boto3.client("ec2", region_name=region)
+          azs = ec2.describe_availability_zones(AllAvailabilityZones=True)["AvailabilityZones"]
+          local_zones = [
+            z for z in azs
+            if z.get("ZoneType") == "local-zone" and z.get("RegionName") == region
+          ]
+          opted_in = [z for z in local_zones if z.get("OptInStatus") == "opted-in"]
+
+          if not local_zones:
+            print(f"No Local Zones discovered in {region}.")
+            sys.exit(1)
+
+          if not opted_in:
+            print(f"No Local Zones are opted-in in {region} for this account.")
+            for z in sorted(local_zones, key=lambda x: x["ZoneName"]):
+              print(f"- {z['ZoneName']}: {z.get('OptInStatus', 'unknown')}")
+            sys.exit(1)
+
+          opted_in_names = [z["ZoneName"] for z in opted_in]
+
+          if manual_zone and manual_instance:
+            if manual_zone not in opted_in_names:
+              print(f"Manual zone '{manual_zone}' is not opted-in or not in {region}.")
+              sys.exit(1)
+            offering = ec2.describe_instance_type_offerings(
+              LocationType="availability-zone",
+              Filters=[
+                {"Name": "location", "Values": [manual_zone]},
+                {"Name": "instance-type", "Values": [manual_instance]},
+              ],
+            )["InstanceTypeOfferings"]
+            if not offering:
+              print(
+                f"Manual selection '{manual_instance}' is not offered in '{manual_zone}'."
+              )
+              sys.exit(1)
+            selected_zone = manual_zone
+            selected_instance = manual_instance
+          else:
+            if not preferred_types:
+              print("preferred_instance_types cannot be empty")
+              sys.exit(1)
+
+            candidates = []
+            for rank, inst in enumerate(preferred_types):
+              offerings = ec2.describe_instance_type_offerings(
+                LocationType="availability-zone",
+                Filters=[
+                  {"Name": "location", "Values": opted_in_names},
+                  {"Name": "instance-type", "Values": [inst]},
+                ],
+              )["InstanceTypeOfferings"]
+              for item in offerings:
+                zone = item["Location"]
+                dist = zone_distance(zone)
+                candidates.append((rank, 999999 if dist is None else dist, zone, inst, dist))
+
+            if not candidates:
+              print("No preferred instance types are offered in opted-in Local Zones.")
+              print("Opted-in zones:")
+              for z in sorted(opted_in_names):
+                print(f"- {z}")
+              sys.exit(1)
+
+            candidates.sort(key=lambda x: (x[0], x[1], x[2]))
+            best = candidates[0]
+            selected_zone = best[2]
+            selected_instance = best[3]
+            dist = best[4]
+            dist_msg = "distance_unknown" if dist is None else f"{dist:.1f} km"
+            print(
+              f"Auto-selected {selected_instance} in {selected_zone} (rank={best[0]}, approx_distance={dist_msg})"
+            )
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+            fh.write(f"selected_zone={selected_zone}\n")
+            fh.write(f"selected_instance_type={selected_instance}\n")
+          PY
+        env:
+          INPUT_REGION: ${{ inputs.region }}
+          INPUT_AVAILABILITY_ZONE: ${{ inputs.availability_zone }}
+          INPUT_INSTANCE_TYPE: ${{ inputs.instance_type }}
+          INPUT_PREFERRED_INSTANCE_TYPES: ${{ inputs.preferred_instance_types }}
+          INPUT_CITY: ${{ inputs.city }}
+
       - name: Generate Terraform values file
         run: |
           cat > deploy/terraform/terraform.auto.tfvars <<EOF
           region            = "${{ inputs.region }}"
-          availability_zone = "${{ inputs.availability_zone }}"
-          instance_type     = "${{ inputs.instance_type }}"
+          availability_zone = "${{ steps.preflight.outputs.selected_zone }}"
+          instance_type     = "${{ steps.preflight.outputs.selected_instance_type }}"
           ssh_cidr          = "${{ inputs.ssh_cidr }}"
           name_prefix       = "${{ inputs.name_prefix }}"
           key_name          = "${{ inputs.key_name }}"
@@ -147,8 +312,10 @@ jobs:
           {
             echo "## Phase 1 Deployment Summary"
             echo "- region: ${{ inputs.region }}"
-            echo "- availability_zone: ${{ inputs.availability_zone }}"
-            echo "- instance_type: ${{ inputs.instance_type }}"
+            echo "- availability_zone: ${{ steps.preflight.outputs.selected_zone }}"
+            echo "- instance_type: ${{ steps.preflight.outputs.selected_instance_type }}"
+            echo "- preferred_instance_types: ${{ inputs.preferred_instance_types }}"
+            echo "- city: ${{ inputs.city }}"
             echo "- name_prefix: ${{ inputs.name_prefix }}"
             echo "- apply_changes: ${{ inputs.apply_changes }}"
             echo "- deploy_to_ec2: ${{ inputs.deploy_to_ec2 }}"
