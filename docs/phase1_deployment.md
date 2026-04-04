@@ -66,24 +66,31 @@ Use workflow `.github/workflows/deploy-phase1.yml` to deploy with all Phase 1 va
 - `ssh_cidr` (default `0.0.0.0/0`)
 - `name_prefix` (default `depth-yolo-phase1`)
 - `key_name` (optional)
+- `use_remote_backend` (`true`/`false`, recommended `true`)
+- `backend_state_bucket` (required if `use_remote_backend=true`)
+- `backend_lock_table` (required if `use_remote_backend=true`)
+- `backend_key` (optional; defaults to `name_prefix/region/terraform.tfstate`)
 - `terraform_action` (`apply`/`destroy`)
 - `deploy_to_ec2` (`true`/`false`)
 
 ### What the workflow does
 
 1. Generates `deploy/terraform/terraform.auto.tfvars` from the provided inputs.
-2. Runs preflight checks for:
+2. Resolves Terraform backend mode:
+	- remote backend: S3 state + DynamoDB locking
+	- local backend: ephemeral state in runner workspace (not recommended for multi-run lifecycle)
+3. Runs preflight checks for:
 	- discovers all Local Zones in region
 	- filters to `opted-in` zones
 	- checks offered instance types across opted-in zones
 	- auto-selects best zone+instance based on `preferred_instance_types` priority and nearest distance to `city`
 	- if both `availability_zone` and `instance_type` are provided, validates and uses them as manual override
-3. Runs `terraform init` and `terraform validate`.
-4. Runs `terraform plan` as part of the `apply` path.
-5. Runs `terraform apply` when `terraform_action=apply`.
-6. Runs `terraform destroy` when `terraform_action=destroy`.
-7. Optionally copies the repo and starts Docker Compose on EC2 when `terraform_action=apply` and `deploy_to_ec2=true`.
-8. Publishes deployment output values in the workflow summary.
+4. Runs `terraform init` with resolved backend config and then `terraform validate`.
+5. Runs `terraform plan` as part of the `apply` path.
+6. Runs `terraform apply` when `terraform_action=apply`.
+7. Runs `terraform destroy` when `terraform_action=destroy`.
+8. Optionally copies the repo and starts Docker Compose on EC2 when `terraform_action=apply` and `deploy_to_ec2=true`.
+9. Publishes deployment output values in the workflow summary.
 
 If preflight fails with "not opted-in", enable the Local Zone in EC2 Console:
 
@@ -91,4 +98,6 @@ If preflight fails with "not opted-in", enable the Local Zone in EC2 Console:
 
 Destroy mode note:
 
-- When `terraform_action=destroy`, provide `availability_zone` explicitly.
+- When `terraform_action=destroy`, the workflow tries to read `availability_zone` from Terraform outputs first.
+- If state/outputs are not available in that run, provide `availability_zone` explicitly.
+- For reliable destroy in separate workflow runs, keep `use_remote_backend=true` with S3 + DynamoDB configured.

@@ -43,6 +43,29 @@ on:
         required: false
         default: ""
         type: string
+      use_remote_backend:
+        description: Use S3 remote Terraform backend with DynamoDB locking
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      backend_state_bucket:
+        description: S3 bucket for Terraform state (required when use_remote_backend=true)
+        required: false
+        default: ""
+        type: string
+      backend_lock_table:
+        description: DynamoDB table for Terraform state locking (required when use_remote_backend=true)
+        required: false
+        default: ""
+        type: string
+      backend_key:
+        description: Optional state object key (default name_prefix/region/terraform.tfstate)
+        required: false
+        default: ""
+        type: string
       terraform_action:
         description: Terraform action to run
         required: true
@@ -86,6 +109,34 @@ jobs:
 
       - name: Verify AWS caller identity
         run: aws sts get-caller-identity
+
+      - name: Resolve Terraform backend config
+        id: backend
+        run: |
+          set -euo pipefail
+
+          if [ "${{ inputs.use_remote_backend }}" = "true" ]; then
+            bucket="${{ inputs.backend_state_bucket }}"
+            lock_table="${{ inputs.backend_lock_table }}"
+            key="${{ inputs.backend_key }}"
+            if [ -z "$key" ]; then
+              key="${{ inputs.name_prefix }}/${{ inputs.region }}/terraform.tfstate"
+            fi
+
+            if [ -z "$bucket" ] || [ -z "$lock_table" ]; then
+              echo "When use_remote_backend=true, backend_state_bucket and backend_lock_table are required."
+              exit 1
+            fi
+
+            init_args="-reconfigure -backend-config=bucket=$bucket -backend-config=key=$key -backend-config=region=${{ inputs.region }} -backend-config=dynamodb_table=$lock_table"
+            echo "backend_mode=remote" >> "$GITHUB_OUTPUT"
+            echo "backend_key=$key" >> "$GITHUB_OUTPUT"
+            echo "init_args=$init_args" >> "$GITHUB_OUTPUT"
+          else
+            echo "backend_mode=local" >> "$GITHUB_OUTPUT"
+            echo "backend_key=local" >> "$GITHUB_OUTPUT"
+            echo "init_args=-reconfigure" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Setup Python for preflight
         if: inputs.terraform_action != 'destroy'
@@ -258,13 +309,19 @@ jobs:
             zone="${{ inputs.availability_zone }}"
             instance_type="${{ inputs.instance_type }}"
 
+            if [ -z "$zone" ]; then
+              terraform init -input=false -no-color ${{ steps.backend.outputs.init_args }} >/dev/null 2>&1 || true
+              zone=$(terraform output -json 2>/dev/null | python -c 'import json,sys; data=json.load(sys.stdin) if not sys.stdin.isatty() else {}; print((data.get("availability_zone") or {}).get("value", ""))' 2>/dev/null || true)
+            fi
+
             if [ -z "$instance_type" ]; then
               instance_type="g6.xlarge"
             fi
 
             if [ -z "$zone" ]; then
-              echo "For destroy, availability_zone input is required."
+              echo "For destroy, availability_zone input is required when state/outputs are unavailable."
               echo "Example: us-east-1-nyc-2a"
+              echo "Tip: if destroy is run in a new workflow run, configure remote Terraform state (for example S3 backend) to retain outputs/state across runs."
               exit 1
             fi
           else
@@ -288,7 +345,7 @@ jobs:
 
       - name: Terraform init
         working-directory: deploy/terraform
-        run: terraform init
+        run: terraform init -input=false -no-color ${{ steps.backend.outputs.init_args }}
 
       - name: Terraform validate
         working-directory: deploy/terraform
@@ -357,6 +414,8 @@ jobs:
             echo "- preferred_instance_types: ${{ inputs.preferred_instance_types }}"
             echo "- city: ${{ inputs.city }}"
             echo "- name_prefix: ${{ inputs.name_prefix }}"
+            echo "- backend_mode: ${{ steps.backend.outputs.backend_mode }}"
+            echo "- backend_key: ${{ steps.backend.outputs.backend_key }}"
             echo "- terraform_action: ${{ inputs.terraform_action }}"
             echo "- deploy_to_ec2: ${{ inputs.deploy_to_ec2 }}"
             if [ "${{ inputs.terraform_action }}" = "apply" ]; then
