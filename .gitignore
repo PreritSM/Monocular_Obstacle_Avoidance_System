@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Env/config
+.env
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Logs/artifacts
+logs/
+artifacts/
+benchmarks/output/
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/

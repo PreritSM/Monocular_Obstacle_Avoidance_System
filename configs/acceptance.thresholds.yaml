@@ -1,0 +1,20 @@
+latency:
+  median_ms_max: 90
+  p95_ms_max: 120
+  p99_ms_max: 150
+stale:
+  threshold_ms: 120
+  stale_rate_nominal_max_pct: 3
+  stale_rate_impaired_max_pct: 5
+throughput:
+  usable_update_rate_hz_min: 10
+  usable_update_rate_hz_target_min: 15
+packet_loss:
+  stable_upto_pct: 2
+  degraded_but_functional_upto_pct: 5
+disconnect:
+  auto_recover_max_dropout_ms: 300
+queue:
+  max_backlog: 1
+stability:
+  max_latency_drift_ms_5min: 15

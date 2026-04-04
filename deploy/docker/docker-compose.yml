@@ -1,0 +1,43 @@
+version: "3.9"
+
+services:
+  signaling:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.signaling
+    container_name: signaling
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+
+  edge_gateway:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.edge_gateway
+    container_name: edge_gateway
+    restart: unless-stopped
+    depends_on:
+      - triton
+      - signaling
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ../../configs:/app/configs:ro
+      - ../../logs:/app/logs
+    command: ["python", "-m", "services.edge_gateway.app", "--config", "configs/edge_gateway.self_hosted.yaml"]
+
+  triton:
+    image: nvcr.io/nvidia/tritonserver:24.08-py3
+    container_name: triton
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    command: ["tritonserver", "--model-repository=/models"]
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+      - "8002:8002"
+    volumes:
+      - ../../triton/model_repository:/models

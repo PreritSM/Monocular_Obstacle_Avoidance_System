@@ -1,0 +1,31 @@
+name: "yolo26n_seg"
+platform: "tensorrt_plan"
+max_batch_size: 1
+
+input [
+  {
+    name: "images"
+    data_type: TYPE_FP32
+    dims: [3, 480, 640]
+  }
+]
+
+output [
+  {
+    name: "detections"
+    data_type: TYPE_FP32
+    dims: [-1, 7]
+  }
+]
+
+instance_group [
+  {
+    kind: KIND_GPU
+    count: 1
+  }
+]
+
+dynamic_batching {
+  preferred_batch_size: [1]
+  max_queue_delay_microseconds: 0
+}

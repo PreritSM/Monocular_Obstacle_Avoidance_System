@@ -1,0 +1,6 @@
+region            = "us-east-1"
+availability_zone = "us-east-1-nyc-1a"
+instance_type     = "g6.xlarge"
+ssh_cidr          = "YOUR_IP/32"
+name_prefix       = "depth-yolo-phase1"
+key_name          = ""

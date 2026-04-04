@@ -1,0 +1,15 @@
+mode: aws_kvs
+log_file: logs/jetson_session.jsonl
+camera:
+  adapter: opencv
+  device_index: 0
+  width: 640
+  height: 480
+  fps: 30
+webrtc:
+  channel_name: depth-yolo-phase1
+  region: us-east-1
+  client_id: jetson-1
+  metadata_channel: nav_meta
+latency:
+  stale_threshold_ms: 120
