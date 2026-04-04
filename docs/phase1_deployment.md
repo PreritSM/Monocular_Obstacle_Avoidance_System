@@ -66,7 +66,7 @@ Use workflow `.github/workflows/deploy-phase1.yml` to deploy with all Phase 1 va
 - `ssh_cidr` (default `0.0.0.0/0`)
 - `name_prefix` (default `depth-yolo-phase1`)
 - `key_name` (optional)
-- `apply_changes` (`true`/`false`)
+- `terraform_action` (`apply`/`destroy`)
 - `deploy_to_ec2` (`true`/`false`)
 
 ### What the workflow does
@@ -78,10 +78,12 @@ Use workflow `.github/workflows/deploy-phase1.yml` to deploy with all Phase 1 va
 	- checks offered instance types across opted-in zones
 	- auto-selects best zone+instance based on `preferred_instance_types` priority and nearest distance to `city`
 	- if both `availability_zone` and `instance_type` are provided, validates and uses them as manual override
-3. Runs `terraform init`, `terraform validate`, and `terraform plan`.
-4. Applies changes if `apply_changes=true`.
-5. Optionally copies the repo and starts Docker Compose on EC2 if `deploy_to_ec2=true`.
-6. Publishes deployment output values in the workflow summary.
+3. Runs `terraform init` and `terraform validate`.
+4. Runs `terraform plan` as part of the `apply` path.
+5. Runs `terraform apply` when `terraform_action=apply`.
+6. Runs `terraform destroy` when `terraform_action=destroy`.
+7. Optionally copies the repo and starts Docker Compose on EC2 when `terraform_action=apply` and `deploy_to_ec2=true`.
+8. Publishes deployment output values in the workflow summary.
 
 If preflight fails with "not opted-in", enable the Local Zone in EC2 Console:
 

@@ -43,14 +43,14 @@ on:
         required: false
         default: ""
         type: string
-      apply_changes:
-        description: Apply Terraform changes (true/false)
+      terraform_action:
+        description: Terraform action to run
         required: true
-        default: "true"
+        default: "apply"
         type: choice
         options:
-          - "true"
-          - "false"
+          - "apply"
+          - "destroy"
       deploy_to_ec2:
         description: Copy repository and start Docker stack on EC2 (true/false)
         required: true
@@ -88,14 +88,17 @@ jobs:
         run: aws sts get-caller-identity
 
       - name: Setup Python for preflight
+        if: inputs.terraform_action != 'destroy'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install preflight dependencies
+        if: inputs.terraform_action != 'destroy'
         run: python -m pip install --upgrade pip boto3
 
       - name: Preflight select zone and instance
+        if: inputs.terraform_action != 'destroy'
         id: preflight
         run: |
           set -euo pipefail
@@ -241,12 +244,45 @@ jobs:
           INPUT_PREFERRED_INSTANCE_TYPES: ${{ inputs.preferred_instance_types }}
           INPUT_CITY: ${{ inputs.city }}
 
+      - name: Resolve deployment values
+        id: tf_values
+        working-directory: deploy/terraform
+        run: |
+          set -euo pipefail
+
+          action="${{ inputs.terraform_action }}"
+          zone=""
+          instance_type=""
+
+          if [ "$action" = "destroy" ]; then
+            zone="${{ inputs.availability_zone }}"
+            instance_type="${{ inputs.instance_type }}"
+
+            if [ -z "$zone" ]; then
+              zone=$(terraform output -raw availability_zone 2>/dev/null || true)
+            fi
+            if [ -z "$instance_type" ]; then
+              instance_type="g6.xlarge"
+            fi
+
+            if [ -z "$zone" ]; then
+              echo "For destroy, provide availability_zone input or keep existing state with output 'availability_zone'."
+              exit 1
+            fi
+          else
+            zone="${{ steps.preflight.outputs.selected_zone }}"
+            instance_type="${{ steps.preflight.outputs.selected_instance_type }}"
+          fi
+
+          echo "selected_zone=$zone" >> "$GITHUB_OUTPUT"
+          echo "selected_instance_type=$instance_type" >> "$GITHUB_OUTPUT"
+
       - name: Generate Terraform values file
         run: |
           cat > deploy/terraform/terraform.auto.tfvars <<EOF
           region            = "${{ inputs.region }}"
-          availability_zone = "${{ steps.preflight.outputs.selected_zone }}"
-          instance_type     = "${{ steps.preflight.outputs.selected_instance_type }}"
+          availability_zone = "${{ steps.tf_values.outputs.selected_zone }}"
+          instance_type     = "${{ steps.tf_values.outputs.selected_instance_type }}"
           ssh_cidr          = "${{ inputs.ssh_cidr }}"
           name_prefix       = "${{ inputs.name_prefix }}"
           key_name          = "${{ inputs.key_name }}"
@@ -261,16 +297,22 @@ jobs:
         run: terraform validate
 
       - name: Terraform plan
+        if: inputs.terraform_action == 'apply'
         working-directory: deploy/terraform
         run: terraform plan -out=tfplan
 
       - name: Terraform apply
-        if: inputs.apply_changes == 'true'
+        if: inputs.terraform_action == 'apply'
         working-directory: deploy/terraform
         run: terraform apply -auto-approve tfplan
 
+      - name: Terraform destroy
+        if: inputs.terraform_action == 'destroy'
+        working-directory: deploy/terraform
+        run: terraform destroy -auto-approve
+
       - name: Capture Terraform outputs
-        if: inputs.apply_changes == 'true'
+        if: inputs.terraform_action == 'apply'
         id: tf_outputs
         working-directory: deploy/terraform
         run: |
@@ -279,7 +321,7 @@ jobs:
           echo "availability_zone=$(terraform output -raw availability_zone)" >> "$GITHUB_OUTPUT"
 
       - name: Validate SSH key secret for EC2 deployment
-        if: inputs.apply_changes == 'true' && inputs.deploy_to_ec2 == 'true'
+        if: inputs.terraform_action == 'apply' && inputs.deploy_to_ec2 == 'true'
         env:
           EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
         run: |
@@ -289,20 +331,20 @@ jobs:
           fi
 
       - name: Setup SSH agent
-        if: inputs.apply_changes == 'true' && inputs.deploy_to_ec2 == 'true'
+        if: inputs.terraform_action == 'apply' && inputs.deploy_to_ec2 == 'true'
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
 
       - name: Copy repository to EC2
-        if: inputs.apply_changes == 'true' && inputs.deploy_to_ec2 == 'true'
+        if: inputs.terraform_action == 'apply' && inputs.deploy_to_ec2 == 'true'
         run: |
           mkdir -p ~/.ssh
           ssh-keyscan -H "${{ steps.tf_outputs.outputs.public_ip }}" >> ~/.ssh/known_hosts
           rsync -az --delete --exclude '.git' ./ "ubuntu@${{ steps.tf_outputs.outputs.public_ip }}:~/Depth_Yolo_AWS/"
 
       - name: Start Docker stack on EC2
-        if: inputs.apply_changes == 'true' && inputs.deploy_to_ec2 == 'true'
+        if: inputs.terraform_action == 'apply' && inputs.deploy_to_ec2 == 'true'
         run: |
           ssh "ubuntu@${{ steps.tf_outputs.outputs.public_ip }}" \
             'cd ~/Depth_Yolo_AWS/deploy/docker && docker compose up -d --build'
@@ -312,14 +354,14 @@ jobs:
           {
             echo "## Phase 1 Deployment Summary"
             echo "- region: ${{ inputs.region }}"
-            echo "- availability_zone: ${{ steps.preflight.outputs.selected_zone }}"
-            echo "- instance_type: ${{ steps.preflight.outputs.selected_instance_type }}"
+            echo "- availability_zone: ${{ steps.tf_values.outputs.selected_zone }}"
+            echo "- instance_type: ${{ steps.tf_values.outputs.selected_instance_type }}"
             echo "- preferred_instance_types: ${{ inputs.preferred_instance_types }}"
             echo "- city: ${{ inputs.city }}"
             echo "- name_prefix: ${{ inputs.name_prefix }}"
-            echo "- apply_changes: ${{ inputs.apply_changes }}"
+            echo "- terraform_action: ${{ inputs.terraform_action }}"
             echo "- deploy_to_ec2: ${{ inputs.deploy_to_ec2 }}"
-            if [ "${{ inputs.apply_changes }}" = "true" ]; then
+            if [ "${{ inputs.terraform_action }}" = "apply" ]; then
               echo "- instance_id: ${{ steps.tf_outputs.outputs.instance_id }}"
               echo "- public_ip: ${{ steps.tf_outputs.outputs.public_ip }}"
             fi
