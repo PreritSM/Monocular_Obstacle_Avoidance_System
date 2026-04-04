@@ -88,3 +88,7 @@ Use workflow `.github/workflows/deploy-phase1.yml` to deploy with all Phase 1 va
 If preflight fails with "not opted-in", enable the Local Zone in EC2 Console:
 
 - `EC2` -> `Account attributes` -> `Zones` -> opt in the target Local Zone.
+
+Destroy mode note:
+
+- When `terraform_action=destroy`, provide `availability_zone` explicitly.

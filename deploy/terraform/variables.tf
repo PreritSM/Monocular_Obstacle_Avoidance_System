@@ -28,3 +28,9 @@ variable "key_name" {
   description = "Optional EC2 key pair name. Leave empty to use SSM only."
   default     = ""
 }
+
+variable "root_volume_type" {
+  type        = string
+  description = "Root EBS volume type. Use gp2 for broader Local Zone compatibility."
+  default     = "gp2"
+}

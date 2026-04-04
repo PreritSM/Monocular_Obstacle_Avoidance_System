@@ -145,7 +145,7 @@ resource "aws_instance" "edge" {
 
   root_block_device {
     volume_size = 100
-    volume_type = "gp3"
+    volume_type = var.root_volume_type
   }
 
   tags = {

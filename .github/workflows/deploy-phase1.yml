@@ -258,15 +258,13 @@ jobs:
             zone="${{ inputs.availability_zone }}"
             instance_type="${{ inputs.instance_type }}"
 
-            if [ -z "$zone" ]; then
-              zone=$(terraform output -raw availability_zone 2>/dev/null || true)
-            fi
             if [ -z "$instance_type" ]; then
               instance_type="g6.xlarge"
             fi
 
             if [ -z "$zone" ]; then
-              echo "For destroy, provide availability_zone input or keep existing state with output 'availability_zone'."
+              echo "For destroy, availability_zone input is required."
+              echo "Example: us-east-1-nyc-2a"
               exit 1
             fi
           else
