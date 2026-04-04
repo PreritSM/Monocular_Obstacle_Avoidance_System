@@ -1,0 +1,159 @@
+name: deploy-phase1
+
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: AWS region
+        required: true
+        default: us-east-1
+        type: string
+      availability_zone:
+        description: "Local Zone AZ (example: us-east-1-nyc-1a)"
+        required: true
+        type: string
+      instance_type:
+        description: EC2 instance type
+        required: true
+        default: g6.xlarge
+        type: string
+      ssh_cidr:
+        description: SSH ingress CIDR for EC2 security group
+        required: true
+        default: 0.0.0.0/0
+        type: string
+      name_prefix:
+        description: Resource name prefix
+        required: true
+        default: depth-yolo-phase1
+        type: string
+      key_name:
+        description: Optional EC2 key pair name (empty for SSM-only)
+        required: false
+        default: ""
+        type: string
+      apply_changes:
+        description: Apply Terraform changes (true/false)
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      deploy_to_ec2:
+        description: Copy repository and start Docker stack on EC2 (true/false)
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      TF_IN_AUTOMATION: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ inputs.region }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Verify AWS caller identity
+        run: aws sts get-caller-identity
+
+      - name: Generate Terraform values file
+        run: |
+          cat > deploy/terraform/terraform.auto.tfvars <<EOF
+          region            = "${{ inputs.region }}"
+          availability_zone = "${{ inputs.availability_zone }}"
+          instance_type     = "${{ inputs.instance_type }}"
+          ssh_cidr          = "${{ inputs.ssh_cidr }}"
+          name_prefix       = "${{ inputs.name_prefix }}"
+          key_name          = "${{ inputs.key_name }}"
+          EOF
+
+      - name: Terraform init
+        working-directory: deploy/terraform
+        run: terraform init
+
+      - name: Terraform validate
+        working-directory: deploy/terraform
+        run: terraform validate
+
+      - name: Terraform plan
+        working-directory: deploy/terraform
+        run: terraform plan -out=tfplan
+
+      - name: Terraform apply
+        if: inputs.apply_changes == 'true'
+        working-directory: deploy/terraform
+        run: terraform apply -auto-approve tfplan
+
+      - name: Capture Terraform outputs
+        if: inputs.apply_changes == 'true'
+        id: tf_outputs
+        working-directory: deploy/terraform
+        run: |
+          echo "public_ip=$(terraform output -raw public_ip)" >> "$GITHUB_OUTPUT"
+          echo "instance_id=$(terraform output -raw instance_id)" >> "$GITHUB_OUTPUT"
+          echo "availability_zone=$(terraform output -raw availability_zone)" >> "$GITHUB_OUTPUT"
+
+      - name: Validate SSH key secret for EC2 deployment
+        if: inputs.apply_changes == 'true' && inputs.deploy_to_ec2 == 'true'
+        env:
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$EC2_SSH_PRIVATE_KEY" ]; then
+            echo "EC2_SSH_PRIVATE_KEY secret is required when deploy_to_ec2=true"
+            exit 1
+          fi
+
+      - name: Setup SSH agent
+        if: inputs.apply_changes == 'true' && inputs.deploy_to_ec2 == 'true'
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+
+      - name: Copy repository to EC2
+        if: inputs.apply_changes == 'true' && inputs.deploy_to_ec2 == 'true'
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "${{ steps.tf_outputs.outputs.public_ip }}" >> ~/.ssh/known_hosts
+          rsync -az --delete --exclude '.git' ./ "ubuntu@${{ steps.tf_outputs.outputs.public_ip }}:~/Depth_Yolo_AWS/"
+
+      - name: Start Docker stack on EC2
+        if: inputs.apply_changes == 'true' && inputs.deploy_to_ec2 == 'true'
+        run: |
+          ssh "ubuntu@${{ steps.tf_outputs.outputs.public_ip }}" \
+            'cd ~/Depth_Yolo_AWS/deploy/docker && docker compose up -d --build'
+
+      - name: Publish deployment summary
+        run: |
+          {
+            echo "## Phase 1 Deployment Summary"
+            echo "- region: ${{ inputs.region }}"
+            echo "- availability_zone: ${{ inputs.availability_zone }}"
+            echo "- instance_type: ${{ inputs.instance_type }}"
+            echo "- name_prefix: ${{ inputs.name_prefix }}"
+            echo "- apply_changes: ${{ inputs.apply_changes }}"
+            echo "- deploy_to_ec2: ${{ inputs.deploy_to_ec2 }}"
+            if [ "${{ inputs.apply_changes }}" = "true" ]; then
+              echo "- instance_id: ${{ steps.tf_outputs.outputs.instance_id }}"
+              echo "- public_ip: ${{ steps.tf_outputs.outputs.public_ip }}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
