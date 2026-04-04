@@ -54,17 +54,17 @@ on:
       backend_state_bucket:
         description: S3 bucket for Terraform state (required when use_remote_backend=true)
         required: false
-        default: ""
+        default: "true"
         type: string
       backend_lock_table:
         description: DynamoDB table for Terraform state locking (required when use_remote_backend=true)
         required: false
-        default: ""
+        default: "true"
         type: string
       backend_key:
         description: Optional state object key (default name_prefix/region/terraform.tfstate)
         required: false
-        default: ""
+        default: "true"
         type: string
       terraform_action:
         description: Terraform action to run
