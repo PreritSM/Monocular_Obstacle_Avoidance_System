@@ -56,6 +56,12 @@ Use workflow `.github/workflows/deploy-phase1.yml` to deploy with all Phase 1 va
 - `AWS_SECRET_ACCESS_KEY`
 - `EC2_SSH_PRIVATE_KEY` only if you enable `deploy_to_ec2=true`
 
+Optional (recommended for remote backend defaults):
+
+- `TF_STATE_BUCKET`
+- `TF_LOCK_TABLE`
+- `TF_STATE_KEY`
+
 ### Workflow inputs
 
 - `region` (default `us-east-1`)
@@ -70,6 +76,11 @@ Use workflow `.github/workflows/deploy-phase1.yml` to deploy with all Phase 1 va
 - `backend_state_bucket` (required if `use_remote_backend=true`)
 - `backend_lock_table` (required if `use_remote_backend=true`)
 - `backend_key` (optional; defaults to `name_prefix/region/terraform.tfstate`)
+
+Note:
+
+- Do not set backend values to `true`/`false`; they must be actual resource names.
+- If backend inputs are left empty, the workflow will try `TF_STATE_BUCKET` / `TF_LOCK_TABLE` / `TF_STATE_KEY` secrets.
 - `terraform_action` (`apply`/`destroy`)
 - `deploy_to_ec2` (`true`/`false`)
 

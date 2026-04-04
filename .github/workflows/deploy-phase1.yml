@@ -54,17 +54,17 @@ on:
       backend_state_bucket:
         description: S3 bucket for Terraform state (required when use_remote_backend=true)
         required: false
-        default: "true"
+        default: ""
         type: string
       backend_lock_table:
         description: DynamoDB table for Terraform state locking (required when use_remote_backend=true)
         required: false
-        default: "true"
+        default: ""
         type: string
       backend_key:
         description: Optional state object key (default name_prefix/region/terraform.tfstate)
         required: false
-        default: "true"
+        default: ""
         type: string
       terraform_action:
         description: Terraform action to run
@@ -112,6 +112,10 @@ jobs:
 
       - name: Resolve Terraform backend config
         id: backend
+        env:
+          TF_STATE_BUCKET_SECRET: ${{ secrets.TF_STATE_BUCKET }}
+          TF_LOCK_TABLE_SECRET: ${{ secrets.TF_LOCK_TABLE }}
+          TF_STATE_KEY_SECRET: ${{ secrets.TF_STATE_KEY }}
         run: |
           set -euo pipefail
 
@@ -119,12 +123,29 @@ jobs:
             bucket="${{ inputs.backend_state_bucket }}"
             lock_table="${{ inputs.backend_lock_table }}"
             key="${{ inputs.backend_key }}"
+
+            if [ -z "$bucket" ]; then
+              bucket="$TF_STATE_BUCKET_SECRET"
+            fi
+            if [ -z "$lock_table" ]; then
+              lock_table="$TF_LOCK_TABLE_SECRET"
+            fi
+            if [ -z "$key" ]; then
+              key="$TF_STATE_KEY_SECRET"
+            fi
             if [ -z "$key" ]; then
               key="${{ inputs.name_prefix }}/${{ inputs.region }}/terraform.tfstate"
             fi
 
+            if [ "$bucket" = "true" ] || [ "$bucket" = "false" ] || [ "$lock_table" = "true" ] || [ "$lock_table" = "false" ]; then
+              echo "Invalid backend config: bucket/lock table cannot be boolean-like values."
+              echo "Set backend_state_bucket and backend_lock_table workflow inputs, or repository secrets TF_STATE_BUCKET and TF_LOCK_TABLE."
+              exit 1
+            fi
+
             if [ -z "$bucket" ] || [ -z "$lock_table" ]; then
               echo "When use_remote_backend=true, backend_state_bucket and backend_lock_table are required."
+              echo "You can provide them as workflow inputs or secrets TF_STATE_BUCKET / TF_LOCK_TABLE."
               exit 1
             fi
 
