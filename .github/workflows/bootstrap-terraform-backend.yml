@@ -10,11 +10,13 @@ on:
         type: string
       state_bucket:
         description: S3 bucket name for Terraform state
-        required: true
+        required: false
+        default: drone-backend
         type: string
       lock_table:
         description: DynamoDB table name for Terraform state locking
-        required: true
+        required: false
+        default: drone-backend
         type: string
       state_key_prefix:
         description: Optional state key prefix hint (informational)
