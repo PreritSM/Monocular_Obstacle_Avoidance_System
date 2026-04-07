@@ -43,24 +43,6 @@ on:
         required: false
         default: ""
         type: string
-      use_remote_backend:
-        description: Use S3 remote Terraform backend with DynamoDB locking
-        required: true
-        default: "true"
-        type: choice
-        options:
-          - "true"
-          - "false"
-      backend_state_bucket:
-        description: S3 bucket for Terraform state (required when use_remote_backend=true)
-        required: false
-        default: ""
-        type: string
-      backend_lock_table:
-        description: DynamoDB table for Terraform state locking (required when use_remote_backend=true)
-        required: false
-        default: ""
-        type: string
       backend_key:
         description: Optional state object key (default name_prefix/region/terraform.tfstate)
         required: false
@@ -115,28 +97,25 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ "${{ inputs.use_remote_backend }}" = "true" ]; then
-            bucket="${{ inputs.backend_state_bucket }}"
-            bucket="${bucket:-${{ secrets.TF_STATE_BUCKET }}}"
-            lock_table="${{ inputs.backend_lock_table }}"
-            lock_table="${lock_table:-${{ secrets.TF_LOCK_TABLE }}}"
-            key="${{ inputs.backend_key }}"
-            key="${key:-${{ inputs.name_prefix }}/${{ inputs.region }}/terraform.tfstate}"
+          bucket="${{ secrets.TF_STATE_BUCKET }}"
+          lock_table="${{ secrets.TF_LOCK_TABLE }}"
+          key="${{ inputs.backend_key }}"
+          key="${key:-${{ inputs.name_prefix }}/${{ inputs.region }}/terraform.tfstate}"
 
-            if [ -z "$bucket" ] || [ -z "$lock_table" ]; then
-              echo "Error: TF_STATE_BUCKET and TF_LOCK_TABLE secrets must be set"
-              exit 1
-            fi
-
-            init_args="-reconfigure -backend-config=bucket=$bucket -backend-config=key=$key -backend-config=region=${{ inputs.region }} -backend-config=dynamodb_table=$lock_table"
-            echo "backend_mode=remote" >> "$GITHUB_OUTPUT"
-            echo "backend_key=$key" >> "$GITHUB_OUTPUT"
-            echo "init_args=$init_args" >> "$GITHUB_OUTPUT"
-          else
-            echo "backend_mode=local" >> "$GITHUB_OUTPUT"
-            echo "backend_key=local" >> "$GITHUB_OUTPUT"
-            echo "init_args=-reconfigure" >> "$GITHUB_OUTPUT"
+          if [ "$bucket" = "true" ] || [ "$bucket" = "false" ] || [ "$lock_table" = "true" ] || [ "$lock_table" = "false" ]; then
+            echo "Invalid backend config: TF_STATE_BUCKET / TF_LOCK_TABLE secrets cannot be boolean-like values."
+            exit 1
           fi
+
+          if [ -z "$bucket" ] || [ -z "$lock_table" ]; then
+            echo "Error: TF_STATE_BUCKET and TF_LOCK_TABLE secrets must be set"
+            exit 1
+          fi
+
+          init_args="-reconfigure -backend-config=bucket=$bucket -backend-config=key=$key -backend-config=region=${{ inputs.region }} -backend-config=dynamodb_table=$lock_table"
+          echo "backend_mode=remote" >> "$GITHUB_OUTPUT"
+          echo "backend_key=$key" >> "$GITHUB_OUTPUT"
+          echo "init_args=$init_args" >> "$GITHUB_OUTPUT"
 
       - name: Setup Python for preflight
         if: inputs.terraform_action != 'destroy'
