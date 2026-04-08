@@ -1,7 +1,7 @@
-aiortc==1.8.0
-av==12.3.0
+aiortc==1.14.0
+av==16.1.0
 numpy==2.2.4
-tritonclient[grpc]==2.55.0
+tritonclient[grpc]==2.67.0
 websockets==12.0
 pyyaml==6.0.2
 orjson==3.10.16

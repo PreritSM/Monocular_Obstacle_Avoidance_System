@@ -14,7 +14,6 @@ from common.logging_utils import JsonlLogger
 from jetson_client.camera.external_adapter import ExternalFeedAdapter
 from jetson_client.camera.opencv_camera import OpenCVCameraAdapter
 from jetson_client.webrtc.media import CameraVideoTrack
-from jetson_client.webrtc.signaling_aws_kvs import AwsKvsSignalingClient
 from jetson_client.webrtc.signaling_self_hosted import SelfHostedSignalingClient
 
 
@@ -35,17 +34,14 @@ async def run_sender(config: dict[str, Any]) -> None:
 
     adapter.start()
 
-    mode = config["mode"]
-    if mode == "self_hosted":
-        wcfg = config["webrtc"]
-        signaling = SelfHostedSignalingClient(
-            url=wcfg["signaling_url"], room_id=wcfg["room_id"], peer_id=wcfg["peer_id"]
-        )
-    else:
-        wcfg = config["webrtc"]
-        signaling = AwsKvsSignalingClient(
-            channel_name=wcfg["channel_name"], region=wcfg["region"], client_id=wcfg["client_id"]
-        )
+    mode = config.get("mode", "self_hosted")
+    if mode != "self_hosted":
+        raise ValueError("Only self_hosted signaling is supported on this branch")
+
+    wcfg = config["webrtc"]
+    signaling = SelfHostedSignalingClient(
+        url=wcfg["signaling_url"], room_id=wcfg["room_id"], peer_id=wcfg["peer_id"]
+    )
 
     await signaling.connect()
 

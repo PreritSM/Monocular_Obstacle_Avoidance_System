@@ -16,7 +16,6 @@ from common.config import load_yaml
 from common.logging_utils import JsonlLogger
 from services.edge_gateway.frame_queue import FramePacket, LatestFrameQueue
 from services.edge_gateway.metadata import build_metadata
-from services.edge_gateway.signaling_aws_kvs import AwsKvsSignalingClient
 from services.edge_gateway.signaling_self_hosted import SelfHostedSignalingClient
 from services.edge_gateway.triton_infer import InferenceConfig, TritonYoloClient
 
@@ -24,17 +23,14 @@ from services.edge_gateway.triton_infer import InferenceConfig, TritonYoloClient
 async def run_edge(config: dict[str, Any]) -> None:
     logger = JsonlLogger(config["log_file"])
 
-    mode = config["mode"]
-    if mode == "self_hosted":
-        scfg = config["signaling"]
-        signaling = SelfHostedSignalingClient(
-            url=scfg["signaling_url"], room_id=scfg["room_id"], peer_id=scfg["peer_id"]
-        )
-    else:
-        scfg = config["signaling"]
-        signaling = AwsKvsSignalingClient(
-            channel_name=scfg["channel_name"], region=scfg["region"], client_id=scfg["client_id"]
-        )
+    mode = config.get("mode", "self_hosted")
+    if mode != "self_hosted":
+        raise ValueError("Only self_hosted signaling is supported on this branch")
+
+    scfg = config["signaling"]
+    signaling = SelfHostedSignalingClient(
+        url=scfg["signaling_url"], room_id=scfg["room_id"], peer_id=scfg["peer_id"]
+    )
 
     await signaling.connect()
 

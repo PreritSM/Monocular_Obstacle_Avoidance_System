@@ -1,11 +1,11 @@
-# Depth YOLO AWS - Phase 1
+# Depth YOLO - Vast.ai GPU VM
 
-Phase 1 implements a low-latency cloud-assisted perception loop for drone experiments:
+This branch focuses on a low-latency perception loop hosted on rented GPU VMs:
 
-- USB camera on Jetson (480p30 target)
+- USB camera on Jetson or any upstream client
 - WebRTC media uplink over UDP
-- EC2 G6 in us-east-1 Local Zone (single instance)
-- Triton Inference Server (YOLO-seg TensorRT model path)
+- Vast.ai GPU VM for signaling, edge inference, and Triton
+- Triton Inference Server for YOLO-seg TensorRT execution
 - Compact metadata return over WebRTC DataChannel
 - Structured logging and benchmark utilities
 
@@ -14,10 +14,8 @@ Phase 1 implements a low-latency cloud-assisted perception loop for drone experi
 - `jetson_client/`: camera capture and WebRTC sender (modular camera adapters)
 - `services/edge_gateway/`: WebRTC ingest + Triton inference + metadata return
 - `services/signaling_self_hosted/`: self-hosted signaling server
-- `services/signaling_kvs/`: AWS Kinesis signaling adapter skeleton
-- `deploy/terraform/`: AWS infrastructure (VPC, subnet, SG, IAM, EC2)
-- `deploy/docker/`: Docker Compose stack for EC2
-- `tools/`: local zone candidate benchmark + metrics analysis
+- `deploy/docker/`: Docker Compose stack for Vast.ai and local GPU VMs
+- `tools/`: latency and metrics analysis helpers
 - `.github/workflows/`: CI checks
 
 ## Model
@@ -46,16 +44,16 @@ Acceptance thresholds are codified in `configs/acceptance.thresholds.yaml` and e
 
 - `python -m tools.analyze_metrics --input logs/session.jsonl --thresholds configs/acceptance.thresholds.yaml`
 
-## AWS deployment
+## Vast.ai deployment
 
-1. Select Local Zone candidates under `us-east-1`:
-   - `python -m tools.select_local_zone --region us-east-1 --instance-type g6.xlarge --city "Henrietta, NY"`
-2. Apply Terraform:
-   - `cd deploy/terraform && terraform init && terraform apply`
-3. Deploy Docker stack on EC2 with generated `.env` values.
+1. Start the host-networked stack on the rented GPU VM:
+   - `docker compose -f deploy/docker/docker-compose.yml up -d --build`
+2. Ensure the Vast.ai instance exposes the WebRTC and signaling ports you expect the client to reach.
+3. Keep the TensorRT model repository mounted read-only so cold starts only pay container startup, not model export time.
+4. Use the self-hosted configs in `configs/edge_gateway.vast_ai.yaml` and `configs/jetson.self_hosted.yaml` unless you need a different signaling endpoint.
 
 ## Notes
 
-- Self-hosted signaling path is fully implemented.
-- AWS Kinesis signaling path is scaffolded behind an interface for Phase 1 experimentation and can be completed with account-specific channel setup.
+- Self-hosted signaling is the only supported signaling path on this branch.
+- Triton remains the inference boundary so model and transport changes stay isolated.
 - Safety controller and fallback autonomy are deferred to the next phase by design.
