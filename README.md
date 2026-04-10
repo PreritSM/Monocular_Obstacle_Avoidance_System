@@ -26,6 +26,12 @@ Configured model artifact target:
 
 Phase 1 keeps the runtime path Triton-first. TensorRT engine build is intentionally externalized to a script hook and model repository layout.
 
+Build the TensorRT engine with:
+
+```bash
+bash scripts/build_triton_engine.sh
+```
+
 ## Quick start (local dev)
 
 1. Create virtual environment and install deps:

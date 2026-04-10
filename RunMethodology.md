@@ -31,15 +31,8 @@ pip install ultralytics
 # Download the YOLO weights
 bash scripts/download_model.sh    # saves to models/yolo26n-seg.pt
 
-# Export to TensorRT engine (run this on the GPU VM)
-python -c "
-from ultralytics import YOLO
-model = YOLO('models/yolo26n-seg.pt')
-model.export(format='engine', imgsz=[480,640], half=False, device=0)
-"
-
-# Move the generated engine to the Triton repo
-cp models/yolo26n-seg.engine triton/model_repository/yolo26n_seg/1/model.plan
+# Export to TensorRT engine and write it directly into the Triton repo
+bash scripts/build_triton_engine.sh
 
 # Verify
 bash scripts/prepare_triton_repo.sh
@@ -138,16 +131,8 @@ mkdir -p logs
 Same as the Vast.ai flow — the engine must be built on the local GPU:
 
 ```bash
-pip install ultralytics
 bash scripts/download_model.sh    # saves models/yolo26n-seg.pt
-
-python -c "
-from ultralytics import YOLO
-model = YOLO('models/yolo26n-seg.pt')
-model.export(format='engine', imgsz=[480,640], half=False, device=0)
-"
-
-cp models/yolo26n-seg.engine triton/model_repository/yolo26n_seg/1/model.plan
+bash scripts/build_triton_engine.sh
 bash scripts/prepare_triton_repo.sh
 ```
 
@@ -167,13 +152,22 @@ sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl restart docker
 ```
 
-**Run Triton locally:**
+**Build the engine locally:**
 ```bash
 docker run --rm --gpus all --network host \
-  -v $(pwd)/triton/model_repository:/models:ro \
+  -v $(pwd)/models:/workspace/models:ro \
+  -v $(pwd)/triton/model_repository:/models \
   --shm-size=1g \
   nvcr.io/nvidia/tritonserver:24.08-py3 \
-  tritonserver --model-repository=/models --strict-model-config=false --log-verbose=0
+  /usr/src/tensorrt/bin/trtexec --onnx=/workspace/models/yolo26n-seg.onnx --saveEngine=/models/yolo26n_seg/1/model.plan --fp16
+```
+
+Engine generation is complete when the command exits successfully.
+
+Then start Triton itself:
+
+```bash
+clear
 ```
 
 Triton is ready when you see:

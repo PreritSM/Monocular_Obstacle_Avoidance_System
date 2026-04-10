@@ -11,7 +11,7 @@ inference:
   model_name: yolo26n_seg
   model_version: "1"
   input_name: images
-  output_names: ["detections"]
+  output_names: ["output0", "output1"]
 runtime:
   queue_depth: 1
   stale_threshold_ms: 120

@@ -23,3 +23,11 @@ benchmarks/output/
 .DS_Store
 .vscode/
 .idea/
+logs/
+*.log
+*.bak
+*.tmp
+*.swp
+*.swo
+triton/
+models/
