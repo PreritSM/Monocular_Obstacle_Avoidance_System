@@ -10,8 +10,9 @@ webrtc:
   room_id: phase1-room
   peer_id: jetson-1
   signaling_url: ws://127.0.0.1:8765/ws
-  ice_servers:
-    - urls: ["stun:stun.l.google.com:19302"]
+  ice_servers: [] # no STUN needed for same-host; avoids gathering stall
+
+    #- urls: ["stun:stun.l.google.com:19302"]
   codec: video/H264
   max_bitrate_kbps: 1100
   metadata_channel: nav_meta

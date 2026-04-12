@@ -106,9 +106,9 @@ You should see entries like:
 {"event": "metadata_rx", "rx_time_ms": 1234567890, "message": "{\"age_ms\": 72, \"is_stale\": false, ...}"}
 ```
 
-To analyze full latency stats after a session:
+To analyze full latency stats after a session, use the Jetson `metadata_rx` payloads from the log:
 ```bash
-python tools/analyze_metrics.py --log logs/jetson_session.jsonl
+python tools/analyze_metrics.py --input logs/jetson_session.jsonl --thresholds configs/acceptance.thresholds.yaml
 ```
 
 ---
@@ -167,7 +167,11 @@ Engine generation is complete when the command exits successfully.
 Then start Triton itself:
 
 ```bash
-clear
+docker run --rm --gpus all --network host \
+  -v $(pwd)/triton/model_repository:/models:ro \
+  --shm-size=1g \
+  nvcr.io/nvidia/tritonserver:24.08-py3 \
+  tritonserver --model-repository=/models --strict-model-config=false --exit-on-error=false --log-verbose=0
 ```
 
 Triton is ready when you see:
@@ -208,10 +212,10 @@ python -m jetson_client.app --config configs/jetson.self_hosted.yaml
 tail -f logs/jetson_session.jsonl | grep metadata_rx
 ```
 
-You should see inference metadata arriving with `age_ms` values. Run the latency report:
+You should see inference metadata arriving with `age_ms` values. Run the latency report from the Jetson log:
 
 ```bash
-python tools/analyze_metrics.py --log logs/jetson_session.jsonl
+python tools/analyze_metrics.py --input logs/jetson_session.jsonl --thresholds configs/acceptance.thresholds.yaml
 ```
 
 ---

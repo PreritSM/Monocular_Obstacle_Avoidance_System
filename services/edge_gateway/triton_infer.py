@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import av
 import numpy as np
 import tritonclient.grpc as grpcclient
 from tritonclient.utils import InferenceServerException
@@ -22,6 +23,12 @@ class TritonYoloClient:
         self._client = grpcclient.InferenceServerClient(url=cfg.triton_url, verbose=False)
 
     def infer(self, image_bgr: np.ndarray) -> dict:
+        # TensorRT model is configured for [1, 3, 640, 640].
+        if image_bgr.shape[0] != 640 or image_bgr.shape[1] != 640:
+            frame = av.VideoFrame.from_ndarray(image_bgr, format="bgr24")
+            frame = frame.reformat(width=640, height=640, format="bgr24")
+            image_bgr = frame.to_ndarray(format="bgr24")
+
         img = image_bgr.astype(np.float32)
         # NHWC->NCHW and batch=1 for expected TensorRT/Triton input layout.
         img = np.transpose(img, (2, 0, 1))[None, ...]
@@ -37,18 +44,18 @@ class TritonYoloClient:
                 inputs=[infer_input],
                 outputs=outputs,
             )
-        except InferenceServerException:
+        except InferenceServerException as exc:
             return {
-                "detections": [],
                 "status": "inference_error",
+                "error": str(exc),
             }
 
-        raw = {}
+        output_shapes: dict[str, list[int]] = {}
         for name in self._cfg.output_names:
             value = result.as_numpy(name)
-            raw[name] = value.tolist() if value is not None else []
+            output_shapes[name] = list(value.shape) if value is not None else []
 
         return {
-            "detections": raw,
             "status": "ok",
+            "output_shapes": output_shapes,
         }

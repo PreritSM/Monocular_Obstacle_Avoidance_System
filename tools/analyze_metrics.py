@@ -24,6 +24,27 @@ def load_jsonl(path: str) -> list[dict[str, Any]]:
     return rows
 
 
+def extract_latency_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    latency_rows: list[dict[str, Any]] = []
+
+    for row in rows:
+        event = row.get("event")
+        if event == "metadata_rx":
+            message = row.get("message")
+            if not isinstance(message, str):
+                continue
+            try:
+                payload = orjson.loads(message)
+            except orjson.JSONDecodeError:
+                continue
+            if "age_ms" in payload:
+                latency_rows.append(payload)
+        elif event == "inference_done":
+            latency_rows.append(row)
+
+    return latency_rows
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
@@ -34,7 +55,7 @@ def main() -> None:
     with Path(args.thresholds).open("r", encoding="utf-8") as f:
         th = yaml.safe_load(f)
 
-    inf = [r for r in rows if r.get("event") == "inference_done"]
+    inf = extract_latency_rows(rows)
     age = [float(r.get("age_ms", 0)) for r in inf]
     stale = [r for r in inf if bool(r.get("is_stale"))]
 

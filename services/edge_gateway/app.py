@@ -20,8 +20,16 @@ from services.edge_gateway.signaling_self_hosted import SelfHostedSignalingClien
 from services.edge_gateway.triton_infer import InferenceConfig, TritonYoloClient
 
 
-async def run_edge(config: dict[str, Any]) -> None:
-    logger = JsonlLogger(config["log_file"])
+async def _wait_for_ice_gathering_complete(pc: RTCPeerConnection, timeout_s: float = 3.0) -> None:
+    start = time.monotonic()
+    while pc.iceGatheringState != "complete":
+        if (time.monotonic() - start) >= timeout_s:
+            break
+        await asyncio.sleep(0.05)
+
+
+async def run_edge(config: dict[str, Any], clean_log: bool = True) -> None:
+    logger = JsonlLogger(config["log_file"], truncate=clean_log)
 
     mode = config.get("mode", "self_hosted")
     if mode != "self_hosted":
@@ -36,6 +44,24 @@ async def run_edge(config: dict[str, Any]) -> None:
 
     ice_servers = [RTCIceServer(urls=item["urls"]) for item in scfg.get("ice_servers", [])]
     pc = RTCPeerConnection(configuration=RTCConfiguration(iceServers=ice_servers))
+    pending_candidates: list[dict[str, Any]] = []
+
+    @pc.on("connectionstatechange")
+    async def on_connectionstatechange() -> None:  # type: ignore[no-redef]
+        logger.log("pc_connection_state", {"state": pc.connectionState})
+
+    @pc.on("iceconnectionstatechange")
+    async def on_iceconnectionstatechange() -> None:  # type: ignore[no-redef]
+        logger.log("pc_ice_connection_state", {"state": pc.iceConnectionState})
+
+    @pc.on("signalingstatechange")
+    async def on_signalingstatechange() -> None:  # type: ignore[no-redef]
+        logger.log("pc_signaling_state", {"state": pc.signalingState})
+
+    @pc.on("icegatheringstatechange")
+    async def on_icegatheringstatechange() -> None:
+        logger.log("pc_ice_gathering_state", {"state": pc.iceGatheringState})
+
 
     inf_cfg = InferenceConfig(**config["inference"])
     infer_client = TritonYoloClient(inf_cfg)
@@ -51,10 +77,16 @@ async def run_edge(config: dict[str, Any]) -> None:
         nonlocal data_channel
         data_channel = channel
 
+        @channel.on("open")
+        def on_open() -> None:
+            logger.log("datachannel_open", {"label": channel.label})
+
     @pc.on("track")
     def on_track(track) -> None:  # type: ignore[no-redef]
         if track.kind != "video":
             return
+
+        logger.log("track_rx", {"kind": track.kind})
 
         async def consume_video() -> None:
             while True:
@@ -72,7 +104,13 @@ async def run_edge(config: dict[str, Any]) -> None:
     @pc.on("icecandidate")
     async def on_icecandidate(candidate) -> None:  # type: ignore[no-redef]
         if candidate is None:
+            logger.log("ice_gathering_done", {})
             return
+        logger.log("ice_candidate_local", {
+            "candidate": candidate.to_sdp(),
+            "sdpMid": candidate.sdpMid,
+            "sdpMLineIndex": candidate.sdpMLineIndex,
+        })
         await signaling.send_candidate(
             candidate=candidate.to_sdp(),
             sdp_mid=candidate.sdpMid,
@@ -108,13 +146,27 @@ async def run_edge(config: dict[str, Any]) -> None:
             )
             answer = await pc.createAnswer()
             await pc.setLocalDescription(answer)
-            await signaling.send_answer(sdp=answer.sdp, sdp_type=answer.type)
+            await _wait_for_ice_gathering_complete(pc)
+            local_answer = pc.localDescription
+            if local_answer is None:
+                raise RuntimeError("Local answer was not set")
+            await signaling.send_answer(sdp=local_answer.sdp, sdp_type=local_answer.type)
+            while pending_candidates:
+                candidate_msg = pending_candidates.pop(0)
+                candidate = candidate_from_sdp(candidate_msg["candidate"])
+                candidate.sdpMid = candidate_msg.get("sdp_mid")
+                candidate.sdpMLineIndex = candidate_msg.get("sdp_mline_index")
+                await pc.addIceCandidate(candidate)
             logger.log("answer_sent", {"mode": mode})
         elif msg_type == "candidate":
+            logger.log("ice_candidate_remote", {"raw": msg.get("candidate"), "sdp_mid": msg.get("sdp_mid")})
             candidate = candidate_from_sdp(msg["candidate"])
             candidate.sdpMid = msg.get("sdp_mid")
             candidate.sdpMLineIndex = msg.get("sdp_mline_index")
-            await pc.addIceCandidate(candidate)
+            if pc.remoteDescription is None:
+                pending_candidates.append(msg)
+            else:
+                await pc.addIceCandidate(candidate)
         elif msg_type == "bye":
             break
 
@@ -125,10 +177,17 @@ async def run_edge(config: dict[str, Any]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
+    parser.add_argument(
+        "--clean-log",
+        dest="clean_log",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Clean the log file before starting (default: enabled).",
+    )
     args = parser.parse_args()
 
     config = load_yaml(args.config)
-    asyncio.run(run_edge(config))
+    asyncio.run(run_edge(config, clean_log=args.clean_log))
 
 
 if __name__ == "__main__":
