@@ -20,16 +20,19 @@ This branch focuses on a low-latency perception loop hosted on rented GPU VMs:
 
 ## Model
 
-Configured model artifact target:
+Configured model artifact targets:
 
 - `https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n-seg.pt`
+- `https://github.com/fabio-sim/Depth-Anything-ONNX/releases/download/v2.0.0/depth_anything_v2_vits.onnx`
 
 Phase 1 keeps the runtime path Triton-first. TensorRT engine build is intentionally externalized to a script hook and model repository layout.
 
-Build the TensorRT engine with:
+Download both model artifacts and build TensorRT engines with:
 
 ```bash
+bash scripts/download_model.sh
 bash scripts/build_triton_engine.sh
+bash scripts/prepare_triton_repo.sh
 ```
 
 ## Quick start (local dev)

@@ -20,16 +20,20 @@ git clone <your-repo-url>
 cd Depth_Yolo_AWS
 ```
 
-### Step 3 — Build the TensorRT engine (model.plan)
+### Step 3 — Build model artifacts for Triton (YOLO + Depth)
 
-The model must be converted to a TensorRT `.plan` file **on the same GPU** it will run on:
+You now need two models in Triton:
+- YOLO segmentation (TensorRT plan)
+- Depth Anything V2 Small (ONNX)
+
+YOLO must be converted to a TensorRT `.plan` file **on the same GPU** it will run on:
 
 ```bash
 # Install ultralytics to export
 pip install ultralytics
 
-# Download the YOLO weights
-bash scripts/download_model.sh    # saves to models/yolo26n-seg.pt
+# Download model artifacts for both YOLO and Depth
+bash scripts/download_model.sh
 
 # Export to TensorRT engine and write it directly into the Triton repo
 bash scripts/build_triton_engine.sh
@@ -37,6 +41,14 @@ bash scripts/build_triton_engine.sh
 # Verify
 bash scripts/prepare_triton_repo.sh
 ```
+
+This script downloads:
+- `models/yolo26n-seg.pt`
+- `models/depth_anything_v2_vits.onnx`
+
+Expected interface is documented in:
+
+`triton/model_repository/depth_anything_v2_small/1/README.md`
 
 ### Step 4 — Start all GPU-side services with Docker Compose
 ```bash
@@ -47,7 +59,7 @@ docker compose up --build
 This starts 3 containers (all on host network):
 - **signaling** on port `8765`
 - **tritonserver** on port `8001`
-- **edge_gateway** — connects to both, waits for a WebRTC offer
+- **edge_gateway** — runs parallel YOLO + depth requests per frame and sends fused compact metadata
 
 Confirm they're up:
 ```bash
@@ -126,15 +138,20 @@ pip install -r requirements-dev.txt
 mkdir -p logs
 ```
 
-### Step 2 — Build the TensorRT engine
+### Step 2 — Build model artifacts for local Triton
 
-Same as the Vast.ai flow — the engine must be built on the local GPU:
+Same as the Vast.ai flow — YOLO engine must be built on the local GPU:
 
 ```bash
-bash scripts/download_model.sh    # saves models/yolo26n-seg.pt
+bash scripts/download_model.sh    # saves YOLO + depth source artifacts in models/
 bash scripts/build_triton_engine.sh
 bash scripts/prepare_triton_repo.sh
 ```
+
+The build script writes TensorRT engines for both models:
+
+- `triton/model_repository/yolo26n_seg/1/model.plan`
+- `triton/model_repository/depth_anything_v2_small/1/model.plan`
 
 ### Step 3 — Install Triton Inference Server locally (via Docker)
 
@@ -179,14 +196,23 @@ Triton is ready when you see:
 Started GRPCInferenceService at 0.0.0.0:8001
 ```
 
-### Step 4 — Fix the self-hosted config to use localhost Triton
+### Step 4 — Confirm self-hosted model endpoints
 
-`configs/edge_gateway.self_hosted.yaml` has `triton_url: triton:8001` (Docker DNS intended for Compose). Change it to `127.0.0.1:8001` for local use:
+`configs/edge_gateway.self_hosted.yaml` should point both model clients to local Triton:
 
 ```yaml
-inference:
-  triton_url: 127.0.0.1:8001   # <-- change from triton:8001
+yolo_inference:
+  triton_url: 127.0.0.1:8001
+
+depth_inference:
+  triton_url: 127.0.0.1:8001
+  input_name: image
 ```
+
+Also verify model names match Triton repository folders:
+
+- `yolo_inference.model_name: yolo26n_seg`
+- `depth_inference.model_name: depth_anything_v2_small`
 
 ### Step 5 — Start the signaling server and edge_gateway
 
@@ -218,6 +244,18 @@ You should see inference metadata arriving with `age_ms` values. Run the latency
 python tools/analyze_metrics.py --input logs/jetson_session.jsonl --thresholds configs/acceptance.thresholds.yaml
 ```
 
+For phase-1 validation, inspect fused payloads and verify both model statuses per frame:
+
+```bash
+tail -f logs/jetson_session.jsonl | grep -E 'metadata_rx|depth|yolo|depth_relative_band'
+```
+
+You should see metadata where:
+- `detections.yolo.status` is `ok`
+- `detections.depth.status` is `ok`
+- `detections.depth.depth_percentiles` is present
+- `detections.depth_relative_band` is one of `near|mid|far`
+
 ---
 
 ## Key Config Files
@@ -225,5 +263,6 @@ python tools/analyze_metrics.py --input logs/jetson_session.jsonl --thresholds c
 | File | Used by | Purpose |
 |---|---|---|
 | `configs/jetson.self_hosted.yaml` | Jetson client | Camera settings, signaling URL |
-| `configs/edge_gateway.vast_ai.yaml` | Docker (edge_gateway) | Triton URL, signaling URL (localhost since host network) |
+| `configs/edge_gateway.self_hosted.yaml` | Local edge gateway | Parallel YOLO + depth model endpoints and runtime thresholds |
+| `configs/edge_gateway.vast_ai.yaml` | Docker (edge_gateway) | Parallel YOLO + depth model endpoints and signaling URL |
 | `deploy/docker/docker-compose.yml` | Vast.ai VM | Defines all 3 server-side services |
