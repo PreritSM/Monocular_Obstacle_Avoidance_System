@@ -169,7 +169,7 @@ sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl restart docker
 ```
 
-**Build the engine locally:**
+<!-- **Build the engine locally:**
 ```bash
 docker run --rm --gpus all --network host \
   -v $(pwd)/models:/workspace/models:ro \
@@ -177,7 +177,7 @@ docker run --rm --gpus all --network host \
   --shm-size=1g \
   nvcr.io/nvidia/tritonserver:24.08-py3 \
   /usr/src/tensorrt/bin/trtexec --onnx=/workspace/models/yolo26n-seg.onnx --saveEngine=/models/yolo26n_seg/1/model.plan --fp16
-```
+``` -->
 
 Engine generation is complete when the command exits successfully.
 
@@ -206,7 +206,8 @@ yolo_inference:
 
 depth_inference:
   triton_url: 127.0.0.1:8001
-  input_name: image
+  input_name: l_x_
+  output_names: ["select_36"]
 ```
 
 Also verify model names match Triton repository folders:
