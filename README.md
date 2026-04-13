@@ -25,9 +25,9 @@ Configured model artifact targets:
 - `https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n-seg.pt`
 - `https://github.com/fabio-sim/Depth-Anything-ONNX/releases/download/v2.0.0/depth_anything_v2_vits.onnx`
 
-Phase 1 keeps the runtime path Triton-first. TensorRT engine build is intentionally externalized to a script hook and model repository layout.
+Phase 1 keeps the runtime path Triton-first. YOLO is built as TensorRT; Depth Anything V2 Small is served from ONNXRuntime in Triton because the downloaded export is not TensorRT-compatible.
 
-Download both model artifacts and build TensorRT engines with:
+Download both model artifacts and build the YOLO TensorRT engine with:
 
 ```bash
 bash scripts/download_model.sh

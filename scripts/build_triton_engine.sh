@@ -40,13 +40,8 @@ docker run --rm --gpus all --network host \
   nvcr.io/nvidia/tritonserver:24.08-py3 \
   /usr/src/tensorrt/bin/trtexec --onnx=/workspace/yolo.onnx --saveEngine=/models/yolo26n_seg/1/model.plan ${TRT_FLAGS}
 
-echo "Building Depth TensorRT engine (${TRT_PRECISION})..."
-docker run --rm --gpus all --network host \
-  -v "${DEPTH_SOURCE_MODEL}:/workspace/depth.onnx:ro" \
-  -v "${TRITON_REPO}:/models" \
-  --shm-size=1g \
-  nvcr.io/nvidia/tritonserver:24.08-py3 \
-  /usr/src/tensorrt/bin/trtexec --onnx=/workspace/depth.onnx --saveEngine=/models/depth_anything_v2_small/1/model.plan ${TRT_FLAGS}
+echo "Depth Anything V2 Small is served via Triton ONNXRuntime for now; copying model artifact..."
+cp "${DEPTH_SOURCE_MODEL}" "${DEPTH_TARGET_ENGINE_DIR}/model.onnx"
 
 echo "Engine written to ${YOLO_TARGET_ENGINE_DIR}/model.plan"
-echo "Engine written to ${DEPTH_TARGET_ENGINE_DIR}/model.plan"
+echo "Depth model written to ${DEPTH_TARGET_ENGINE_DIR}/model.onnx"

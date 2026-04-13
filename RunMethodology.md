@@ -35,7 +35,7 @@ pip install ultralytics
 # Download model artifacts for both YOLO and Depth
 bash scripts/download_model.sh
 
-# Export to TensorRT engine and write it directly into the Triton repo
+# Export the YOLO TensorRT engine directly into the Triton repo
 bash scripts/build_triton_engine.sh
 
 # Verify
@@ -148,10 +148,10 @@ bash scripts/build_triton_engine.sh
 bash scripts/prepare_triton_repo.sh
 ```
 
-The build script writes TensorRT engines for both models:
+The build script writes YOLO as TensorRT and copies Depth Anything V2 Small as ONNXRuntime input:
 
 - `triton/model_repository/yolo26n_seg/1/model.plan`
-- `triton/model_repository/depth_anything_v2_small/1/model.plan`
+- `triton/model_repository/depth_anything_v2_small/1/model.onnx`
 
 ### Step 3 — Install Triton Inference Server locally (via Docker)
 

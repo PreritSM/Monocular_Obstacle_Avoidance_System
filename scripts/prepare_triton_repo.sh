@@ -12,10 +12,10 @@ if [[ ! -f "$YOLO_TARGET_DIR/model.plan" ]]; then
   exit 1
 fi
 
-if [[ ! -f "$DEPTH_TARGET_DIR/model.plan" ]]; then
-  echo "Depth model.plan not found in $DEPTH_TARGET_DIR"
-  echo "Expected file: $DEPTH_TARGET_DIR/model.plan"
+if [[ ! -f "$DEPTH_TARGET_DIR/model.onnx" ]]; then
+  echo "Depth model.onnx not found in $DEPTH_TARGET_DIR"
+  echo "Expected file: $DEPTH_TARGET_DIR/model.onnx"
   exit 1
 fi
 
-echo "Triton model repository looks ready for YOLO + Depth engines."
+echo "Triton model repository looks ready for YOLO TensorRT + Depth ONNXRuntime."

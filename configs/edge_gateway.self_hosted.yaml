@@ -18,8 +18,8 @@ depth_inference:
   triton_url: 127.0.0.1:8001
   model_name: depth_anything_v2_small
   model_version: "1"
-  input_name: image
-  output_names: ["depth"]
+  input_name: l_x_
+  output_names: ["select_36"]
   input_width: 518
   input_height: 518
 runtime:
