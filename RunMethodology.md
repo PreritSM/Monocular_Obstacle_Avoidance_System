@@ -214,6 +214,13 @@ Also verify model names match Triton repository folders:
 - `yolo_inference.model_name: yolo26n_seg`
 - `depth_inference.model_name: depth_anything_v2_small`
 
+Optional: if your YOLO model is not COCO-80, set explicit class labels:
+
+```yaml
+yolo_inference:
+  class_names: ["class0", "class1", "class2"]
+```
+
 ### Step 5 — Start the signaling server and edge_gateway
 
 ```bash
@@ -247,14 +254,19 @@ python tools/analyze_metrics.py --input logs/jetson_session.jsonl --thresholds c
 For phase-1 validation, inspect fused payloads and verify both model statuses per frame:
 
 ```bash
-tail -f logs/jetson_session.jsonl | grep -E 'metadata_rx|depth|yolo|depth_relative_band'
+tail -f logs/jetson_session.jsonl | grep -E 'metadata_rx|overlap|depth_band|depth_median'
 ```
 
 You should see metadata where:
 - `detections.yolo.status` is `ok`
 - `detections.depth.status` is `ok`
 - `detections.depth.depth_percentiles` is present
-- `detections.depth_relative_band` is one of `near|mid|far`
+- `detections.yolo.objects[*].class_name` is present
+- `detections.overlap.object_count` is present
+- `detections.overlap.objects[*].class_name` is present
+- `detections.overlap.objects[*].depth_median` is present
+- `detections.overlap.objects[*].depth_spread_p90_p10` is present
+- `detections.overlap.objects[*].depth_band` is one of `near|mid|far`
 
 ---
 

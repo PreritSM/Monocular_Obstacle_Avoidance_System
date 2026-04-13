@@ -18,9 +18,11 @@ from services.edge_gateway.frame_queue import FramePacket, LatestFrameQueue
 from services.edge_gateway.metadata import build_metadata
 from services.edge_gateway.signaling_self_hosted import SelfHostedSignalingClient
 from services.edge_gateway.triton_infer import (
+    compute_object_depth_overlap,
+    decode_depth_output,
+    decode_yolo_segmentation,
     InferenceConfig,
     TritonModelClient,
-    summarize_depth_output,
 )
 
 
@@ -72,7 +74,13 @@ async def run_edge(config: dict[str, Any], clean_log: bool = True) -> None:
     if yolo_cfg_dict is None:
         raise ValueError("Missing yolo_inference/inference configuration")
 
-    yolo_cfg = InferenceConfig(**yolo_cfg_dict)
+    yolo_cfg_data = dict(yolo_cfg_dict)
+    class_names_raw = yolo_cfg_data.pop("class_names", None)
+    yolo_class_names: list[str] | None = None
+    if isinstance(class_names_raw, list):
+        yolo_class_names = [str(item) for item in class_names_raw]
+
+    yolo_cfg = InferenceConfig(**yolo_cfg_data)
     yolo_client = TritonModelClient(yolo_cfg)
 
     depth_client = None
@@ -88,6 +96,9 @@ async def run_edge(config: dict[str, Any], clean_log: bool = True) -> None:
     stale_threshold_ms = runtime_cfg["stale_threshold_ms"]
     depth_near_threshold = float(runtime_cfg.get("depth_near_threshold", 0.35))
     depth_far_threshold = float(runtime_cfg.get("depth_far_threshold", 0.65))
+    yolo_score_threshold = float(runtime_cfg.get("yolo_score_threshold", 0.25))
+    yolo_mask_threshold = float(runtime_cfg.get("yolo_mask_threshold", 0.5))
+    max_objects_per_frame = int(runtime_cfg.get("max_objects_per_frame", 20))
 
     data_channel = None
 
@@ -145,39 +156,78 @@ async def run_edge(config: dict[str, Any], clean_log: bool = True) -> None:
             if depth_client is not None:
                 depth_task = asyncio.to_thread(depth_client.infer, packet.frame)
                 yolo_result, depth_result_raw = await asyncio.gather(yolo_task, depth_task)
-                depth_result = summarize_depth_output(depth_result_raw, output_name=depth_output_name)
+                depth_decoded = decode_depth_output(
+                    depth_result_raw,
+                    output_name=depth_output_name,
+                )
             else:
                 yolo_result = await yolo_task
-                depth_result = {
+                depth_decoded = {
                     "status": "disabled",
                 }
 
             inference_ts_ms = int(time.time() * 1000)
 
+            yolo_decoded = decode_yolo_segmentation(
+                yolo_result,
+                input_width=yolo_cfg.input_width,
+                input_height=yolo_cfg.input_height,
+                score_threshold=yolo_score_threshold,
+                mask_threshold=yolo_mask_threshold,
+                max_objects=max_objects_per_frame,
+                class_names=yolo_class_names,
+            )
+
+            if depth_decoded.get("status") == "ok":
+                overlap = compute_object_depth_overlap(
+                    yolo_decoded=yolo_decoded,
+                    depth_decoded=depth_decoded,
+                    frame_height=packet.frame.shape[0],
+                    frame_width=packet.frame.shape[1],
+                    yolo_input_width=yolo_cfg.input_width,
+                    yolo_input_height=yolo_cfg.input_height,
+                    near_threshold=depth_near_threshold,
+                    far_threshold=depth_far_threshold,
+                )
+                depth_payload = {
+                    "status": "ok",
+                    "output_name": depth_decoded.get("output_name"),
+                    "output_shape": depth_decoded.get("output_shape"),
+                    "depth_percentiles": depth_decoded.get("depth_percentiles", {}),
+                }
+            else:
+                overlap = {
+                    "status": "disabled",
+                    "object_count": 0,
+                    "objects": [],
+                }
+                depth_payload = {
+                    "status": depth_decoded.get("status", "inference_error"),
+                    "error": depth_decoded.get("error", "depth_not_available"),
+                }
+
+            yolo_objects_compact: list[dict[str, Any]] = []
+            for obj in yolo_decoded.get("objects", []):
+                yolo_objects_compact.append(
+                    {
+                        "class_id": int(obj.get("class_id", -1)),
+                        "class_name": str(obj.get("class_name", "")),
+                        "confidence": float(obj.get("confidence", 0.0)),
+                        "bbox_xyxy": [float(v) for v in obj.get("bbox_xyxy", [0, 0, 0, 0])],
+                    }
+                )
+
             fused = {
                 "status": "ok",
                 "yolo": {
-                    "status": yolo_result.get("status", "inference_error"),
+                    "status": yolo_decoded.get("status", "inference_error"),
                     "output_shapes": yolo_result.get("output_shapes", {}),
+                    "object_count": yolo_decoded.get("object_count", 0),
+                    "objects": yolo_objects_compact,
                 },
-                "depth": depth_result,
+                "depth": depth_payload,
+                "overlap": overlap,
             }
-
-            depth_percentiles = depth_result.get("depth_percentiles", {})
-            if isinstance(depth_percentiles, dict):
-                p10 = depth_percentiles.get("p10")
-                p50 = depth_percentiles.get("p50")
-                p90 = depth_percentiles.get("p90")
-                if isinstance(p10, (float, int)) and isinstance(p50, (float, int)) and isinstance(p90, (float, int)):
-                    denom = max(float(p90) - float(p10), 1e-6)
-                    norm = (float(p50) - float(p10)) / denom
-                    if norm <= depth_near_threshold:
-                        near_far = "near"
-                    elif norm >= depth_far_threshold:
-                        near_far = "far"
-                    else:
-                        near_far = "mid"
-                    fused["depth_relative_band"] = near_far
 
             metadata = build_metadata(
                 trace_id=packet.trace_id,

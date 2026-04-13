@@ -26,5 +26,8 @@ runtime:
   queue_depth: 1
   stale_threshold_ms: 120
   usable_update_rate_hz_min: 10
+  yolo_score_threshold: 0.25
+  yolo_mask_threshold: 0.5
+  max_objects_per_frame: 20
   depth_near_threshold: 0.35
   depth_far_threshold: 0.65
