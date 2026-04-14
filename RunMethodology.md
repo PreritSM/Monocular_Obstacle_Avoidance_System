@@ -12,6 +12,7 @@ The system has two sides:
 
 ### Step 1 — Rent a GPU instance on Vast.ai
 - Pick any instance with an NVIDIA GPU and Docker + NVIDIA drivers pre-installed
+- Expose these TCP ports in Vast.ai instance settings: `8765` (signaling), `8001` (Triton gRPC), `8000` (Triton HTTP, optional health checks)
 - Note the public IP — you'll need it for the Jetson config
 
 ### Step 2 — SSH into the VM and clone the repo
@@ -29,22 +30,27 @@ You now need two models in Triton:
 YOLO must be converted to a TensorRT `.plan` file **on the same GPU** it will run on:
 
 ```bash
-# Install ultralytics to export
+# Install ultralytics for YOLO export
 pip install ultralytics
 
 # Download model artifacts for both YOLO and Depth
 bash scripts/download_model.sh
 
-# Export the YOLO TensorRT engine directly into the Triton repo
+# Export YOLO PyTorch model to ONNX
+python -c "from ultralytics import YOLO; model = YOLO('models/yolo26n-seg.pt'); model.export(format='onnx')"
+
+# Export the YOLO ONNX to TensorRT engine directly into the Triton repo
 bash scripts/build_triton_engine.sh
 
-# Verify
+# Verify both models are in place
 bash scripts/prepare_triton_repo.sh
 ```
 
-This script downloads:
-- `models/yolo26n-seg.pt`
-- `models/depth_anything_v2_vits.onnx`
+This process:
+1. Downloads `models/yolo26n-seg.pt` and `models/depth_anything_v2_vits.onnx`
+2. Exports YOLO to `models/yolo26n-seg.onnx`
+3. Builds TensorRT engine `triton/model_repository/yolo26n_seg/1/model.plan`
+4. Copies Depth model to `triton/model_repository/depth_anything_v2_small/1/model.onnx`
 
 Expected interface is documented in:
 
@@ -57,15 +63,28 @@ docker compose up --build
 ```
 
 This starts 3 containers (all on host network):
-- **signaling** on port `8765`
-- **tritonserver** on port `8001`
+- **signaling** on port `8765` — WebRTC signaling server
+- **tritonserver** on port `8001` — YOLO (TensorRT) + Depth (ONNXRuntime) inference
 - **edge_gateway** — runs parallel YOLO + depth requests per frame and sends fused compact metadata
+
+The edge_gateway automatically uses `configs/edge_gateway.vast_ai.yaml` (configured in docker-compose.yml).
 
 Confirm they're up:
 ```bash
 docker compose ps
+docker compose logs -f triton     # should show "Started GRPCInferenceService at 0.0.0.0:8001" and model status READY
 docker compose logs -f edge_gateway   # should say "waiting for offer..."
 ```
+
+Optional preflight checks from your local/Jetson machine:
+```bash
+nc -vz <VAST_AI_PUBLIC_IP> 8765
+curl --max-time 5 http://<VAST_AI_PUBLIC_IP>:8000/v2/health/ready
+```
+
+Expected:
+- `8765` should be reachable (no timeout)
+- Triton health endpoint should return `OK` once Triton is ready
 
 ---
 
@@ -90,6 +109,23 @@ webrtc:
   signaling_url: ws://<VAST_AI_PUBLIC_IP>:8765/ws   # <-- change this
 ```
 
+If direct public access to port `8765` is blocked, use an SSH tunnel instead and keep `signaling_url` on localhost:
+
+```bash
+ssh -N \
+  -L 8765:127.0.0.1:8765 \
+  -L 8000:127.0.0.1:8000 \
+  -L 8001:127.0.0.1:8001 \
+  root@<VAST_AI_PUBLIC_IP>
+```
+
+Then set:
+
+```yaml
+webrtc:
+  signaling_url: ws://127.0.0.1:8765/ws
+```
+
 Everything else can stay as-is unless you need a different camera device index.
 
 ### Step 3 — Create the logs directory
@@ -103,6 +139,12 @@ python -m jetson_client.app --config configs/jetson.self_hosted.yaml
 ```
 
 You should see it connect to the signaling server, complete WebRTC negotiation, and start streaming. Inference metadata will be logged to `logs/jetson_session.jsonl`.
+
+If you get `TimeoutError` or `ConnectionRefusedError` during `websockets.connect(...)`, it usually means the signaling endpoint is not reachable yet. Re-check:
+1. If using the public IP, confirm port `8765` is reachable from your Jetson.
+2. If using localhost, confirm the SSH tunnel is running and `signaling_url` is `ws://127.0.0.1:8765/ws`.
+3. `docker compose ps` on the Vast VM shows `signaling` is running.
+4. `docker compose logs -f signaling` shows no startup errors.
 
 ---
 
@@ -144,6 +186,10 @@ Same as the Vast.ai flow — YOLO engine must be built on the local GPU:
 
 ```bash
 bash scripts/download_model.sh    # saves YOLO + depth source artifacts in models/
+
+# Export YOLO PyTorch model to ONNX (required before TensorRT conversion)
+python -c "from ultralytics import YOLO; model = YOLO('models/yolo26n-seg.pt'); model.export(format='onnx')"
+
 bash scripts/build_triton_engine.sh
 bash scripts/prepare_triton_repo.sh
 ```
@@ -275,7 +321,9 @@ You should see metadata where:
 
 | File | Used by | Purpose |
 |---|---|---|
-| `configs/jetson.self_hosted.yaml` | Jetson client | Camera settings, signaling URL |
-| `configs/edge_gateway.self_hosted.yaml` | Local edge gateway | Parallel YOLO + depth model endpoints and runtime thresholds |
-| `configs/edge_gateway.vast_ai.yaml` | Docker (edge_gateway) | Parallel YOLO + depth model endpoints and signaling URL |
+| `configs/jetson.self_hosted.yaml` | Jetson client | Camera settings, signaling URL (localhost for local dev, Vast.ai IP for remote) |
+| `configs/edge_gateway.self_hosted.yaml` | Local edge gateway (direct Python execution) | YOLO + depth model endpoints (localhost Triton), runtime thresholds |
+| `configs/edge_gateway.vast_ai.yaml` | Docker edge_gateway container (Vast.ai) | YOLO + depth model endpoints (localhost Triton in Docker), runtime thresholds |
+
+**Note:** Both `self_hosted` and `vast_ai` configs use localhost (`127.0.0.1:8001`) because Docker containers on host network communicate locally. The `self_hosted` suffix refers to GPU provider, not network location.
 | `deploy/docker/docker-compose.yml` | Vast.ai VM | Defines all 3 server-side services |
