@@ -9,9 +9,10 @@ def build_metadata(
     inference_ts_ms: int,
     detections: dict,
     stale_threshold_ms: int,
+    timings_ms: dict | None = None,
 ) -> dict:
     age_ms = max(0, inference_ts_ms - capture_ts_ms)
-    return {
+    metadata = {
         "trace_id": trace_id,
         "capture_ts_ms": capture_ts_ms,
         "edge_rx_ts_ms": edge_rx_ts_ms,
@@ -21,3 +22,6 @@ def build_metadata(
         "stale_threshold_ms": stale_threshold_ms,
         "detections": detections,
     }
+    if isinstance(timings_ms, dict):
+        metadata["timings_ms"] = timings_ms
+    return metadata

@@ -18,6 +18,7 @@ venv/
 logs/
 artifacts/
 benchmarks/output/
+.think_logs/
 
 # OS/editor
 .DS_Store

@@ -6,13 +6,28 @@ signaling:
   signaling_url: ws://127.0.0.1:8765
   ice_servers:
     - urls: ["stun:stun.l.google.com:19302"]
-inference:
+yolo_inference:
   triton_url: 127.0.0.1:8001
   model_name: yolo26n_seg
   model_version: "1"
   input_name: images
   output_names: ["output0", "output1"]
+  input_width: 640
+  input_height: 640
+depth_inference:
+  triton_url: 127.0.0.1:8001
+  model_name: depth_anything_v2_small
+  model_version: "1"
+  input_name: l_x_
+  output_names: ["select_36"]
+  input_width: 518
+  input_height: 518
 runtime:
   queue_depth: 1
   stale_threshold_ms: 120
   usable_update_rate_hz_min: 10
+  yolo_score_threshold: 0.25
+  yolo_mask_threshold: 0.5
+  max_objects_per_frame: 20
+  depth_near_threshold: 0.35
+  depth_far_threshold: 0.65

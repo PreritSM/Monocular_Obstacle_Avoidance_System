@@ -45,6 +45,17 @@ def extract_latency_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return latency_rows
 
 
+def _nested_number(row: dict[str, Any], path: list[str]) -> float | None:
+    cur: Any = row
+    for part in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(part)
+    if isinstance(cur, (int, float)):
+        return float(cur)
+    return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
@@ -58,18 +69,42 @@ def main() -> None:
     inf = extract_latency_rows(rows)
     age = [float(r.get("age_ms", 0)) for r in inf]
     stale = [r for r in inf if bool(r.get("is_stale"))]
+    yolo_inf = [
+        v
+        for v in (_nested_number(r, ["timings_ms", "yolo", "inference_ms"]) for r in inf)
+        if v is not None
+    ]
+    depth_inf = [
+        v
+        for v in (_nested_number(r, ["timings_ms", "depth", "inference_ms"]) for r in inf)
+        if v is not None
+    ]
+    age_reconstructed = [
+        v
+        for v in (_nested_number(r, ["timings_ms", "age_ms_reconstructed"]) for r in inf)
+        if v is not None
+    ]
 
     med = median(age) if age else 0.0
     p95 = percentile(age, 0.95)
     p99 = percentile(age, 0.99)
+    yolo_med = median(yolo_inf) if yolo_inf else 0.0
+    depth_med = median(depth_inf) if depth_inf else 0.0
 
     stale_rate = (len(stale) / len(inf) * 100.0) if inf else 0.0
+    age_reconstructed_med = median(age_reconstructed) if age_reconstructed else 0.0
+    age_vs_reconstructed_residual = med - age_reconstructed_med
 
     print("Latency summary")
     print(f"- median_ms={med:.2f} (target<{th['latency']['median_ms_max']})")
     print(f"- p95_ms={p95:.2f} (target<{th['latency']['p95_ms_max']})")
     print(f"- p99_ms={p99:.2f} (target<{th['latency']['p99_ms_max']})")
     print(f"- stale_rate_pct={stale_rate:.2f} (target<{th['stale']['stale_rate_nominal_max_pct']})")
+    print(f"- yolo_inference_median_ms={yolo_med:.2f}")
+    print(f"- depth_inference_median_ms={depth_med:.2f}")
+    if age_reconstructed:
+        print(f"- age_reconstructed_median_ms={age_reconstructed_med:.2f}")
+        print(f"- age_minus_reconstructed_median_ms={age_vs_reconstructed_residual:.2f}")
 
 
 if __name__ == "__main__":
