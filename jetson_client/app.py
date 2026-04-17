@@ -5,6 +5,7 @@ import asyncio
 import time
 from typing import Any
 
+import orjson
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.rtcconfiguration import RTCConfiguration, RTCIceServer
 from aiortc.sdp import candidate_from_sdp
@@ -100,6 +101,33 @@ async def run_sender(config: dict[str, Any], clean_log: bool = True) -> None:
     def on_message(message: str) -> None:
         now_ms = int(time.time() * 1000)
         logger.log("metadata_rx", {"message": message, "rx_time_ms": now_ms})
+        try:
+            payload = orjson.loads(message)
+        except orjson.JSONDecodeError:
+            return
+
+        if not isinstance(payload, dict):
+            return
+
+        timings = payload.get("timings_ms")
+        if not isinstance(timings, dict):
+            return
+
+        logger.log(
+            "inference_timing_rx",
+            {
+                "trace_id": payload.get("trace_id"),
+                "age_ms": payload.get("age_ms"),
+                "age_ms_reconstructed": timings.get("age_ms_reconstructed"),
+                "capture_to_edge_rx_ms": timings.get("capture_to_edge_rx_ms"),
+                "edge_rx_to_inference_done_ms": timings.get("edge_rx_to_inference_done_ms"),
+                "yolo_inference_ms": ((timings.get("yolo") or {}).get("inference_ms")),
+                "depth_inference_ms": ((timings.get("depth") or {}).get("inference_ms")),
+                "yolo_decode_ms": ((timings.get("yolo") or {}).get("decode_ms")),
+                "depth_decode_ms": ((timings.get("depth") or {}).get("decode_ms")),
+                "fusion_ms": timings.get("fusion_ms"),
+            },
+        )
 
     pc.addTrack(CameraVideoTrack(adapter))
 

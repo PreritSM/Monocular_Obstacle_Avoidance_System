@@ -147,26 +147,40 @@ async def run_edge(config: dict[str, Any], clean_log: bool = True) -> None:
             sdp_mline_index=candidate.sdpMLineIndex,
         )
 
+    def _infer_with_timing(client: TritonModelClient, frame) -> tuple[dict, float]:
+        start = time.perf_counter()
+        result = client.infer(frame)
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        return result, elapsed_ms
+
     async def inference_loop() -> None:
         while True:
             packet = await queue.get()
             edge_rx_ts_ms = int(time.time() * 1000)
+            inference_window_start = time.perf_counter()
 
-            yolo_task = asyncio.to_thread(yolo_client.infer, packet.frame)
+            yolo_task = asyncio.to_thread(_infer_with_timing, yolo_client, packet.frame)
             if depth_client is not None:
-                depth_task = asyncio.to_thread(depth_client.infer, packet.frame)
-                yolo_result, depth_result_raw = await asyncio.gather(yolo_task, depth_task)
+                depth_task = asyncio.to_thread(_infer_with_timing, depth_client, packet.frame)
+                (yolo_result, yolo_inference_ms), (depth_result_raw, depth_inference_ms) = await asyncio.gather(
+                    yolo_task,
+                    depth_task,
+                )
+                depth_decode_start = time.perf_counter()
                 depth_decoded = decode_depth_output(
                     depth_result_raw,
                     output_name=depth_output_name,
                 )
+                depth_decode_ms = (time.perf_counter() - depth_decode_start) * 1000.0
             else:
-                yolo_result = await yolo_task
+                yolo_result, yolo_inference_ms = await yolo_task
+                depth_inference_ms = None
+                depth_decode_ms = 0.0
                 depth_decoded = {
                     "status": "disabled",
                 }
 
-            inference_ts_ms = int(time.time() * 1000)
+            yolo_decode_start = time.perf_counter()
 
             yolo_decoded = decode_yolo_segmentation(
                 yolo_result,
@@ -177,6 +191,9 @@ async def run_edge(config: dict[str, Any], clean_log: bool = True) -> None:
                 max_objects=max_objects_per_frame,
                 class_names=yolo_class_names,
             )
+            yolo_decode_ms = (time.perf_counter() - yolo_decode_start) * 1000.0
+
+            overlap_start = time.perf_counter()
 
             if depth_decoded.get("status") == "ok":
                 overlap = compute_object_depth_overlap(
@@ -205,6 +222,7 @@ async def run_edge(config: dict[str, Any], clean_log: bool = True) -> None:
                     "status": depth_decoded.get("status", "inference_error"),
                     "error": depth_decoded.get("error", "depth_not_available"),
                 }
+            overlap_ms = (time.perf_counter() - overlap_start) * 1000.0
 
             yolo_objects_compact: list[dict[str, Any]] = []
             for obj in yolo_decoded.get("objects", []):
@@ -229,6 +247,30 @@ async def run_edge(config: dict[str, Any], clean_log: bool = True) -> None:
                 "overlap": overlap,
             }
 
+            inference_ts_ms = int(time.time() * 1000)
+            edge_to_inference_done_ms = max(0, inference_ts_ms - edge_rx_ts_ms)
+            capture_to_edge_rx_ms = max(0, edge_rx_ts_ms - packet.capture_ts_ms)
+            parallel_window_ms = (time.perf_counter() - inference_window_start) * 1000.0
+            timings_ms = {
+                "yolo": {
+                    "model_name": yolo_cfg.model_name,
+                    "model_version": yolo_cfg.model_version,
+                    "inference_ms": float(yolo_inference_ms),
+                    "decode_ms": float(yolo_decode_ms),
+                },
+                "depth": {
+                    "model_name": depth_cfg_dict.get("model_name") if isinstance(depth_cfg_dict, dict) else None,
+                    "model_version": depth_cfg_dict.get("model_version") if isinstance(depth_cfg_dict, dict) else None,
+                    "inference_ms": float(depth_inference_ms) if depth_inference_ms is not None else None,
+                    "decode_ms": float(depth_decode_ms),
+                },
+                "fusion_ms": float(overlap_ms),
+                "parallel_window_ms": float(parallel_window_ms),
+                "capture_to_edge_rx_ms": int(capture_to_edge_rx_ms),
+                "edge_rx_to_inference_done_ms": int(edge_to_inference_done_ms),
+                "age_ms_reconstructed": int(capture_to_edge_rx_ms + edge_to_inference_done_ms),
+            }
+
             metadata = build_metadata(
                 trace_id=packet.trace_id,
                 capture_ts_ms=packet.capture_ts_ms,
@@ -236,6 +278,7 @@ async def run_edge(config: dict[str, Any], clean_log: bool = True) -> None:
                 inference_ts_ms=inference_ts_ms,
                 detections=fused,
                 stale_threshold_ms=stale_threshold_ms,
+                timings_ms=timings_ms,
             )
             logger.log("inference_done", metadata)
             if data_channel is not None and data_channel.readyState == "open":
