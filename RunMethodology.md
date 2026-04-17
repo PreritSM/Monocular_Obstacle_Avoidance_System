@@ -17,8 +17,8 @@ The system has two sides:
 
 ### Step 2 — SSH into the VM and clone the repo
 ```bash
-git clone <your-repo-url>
-cd Depth_Yolo_AWS
+git clone https://github.com/PreritSM/Monocular_Obstacle_Avoidance_System.git
+cd Monocular_Obstacle_Avoidance_System
 ```
 
 ### Step 3 — Build model artifacts for Triton (YOLO + Depth)
