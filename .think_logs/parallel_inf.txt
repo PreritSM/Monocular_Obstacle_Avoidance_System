@@ -1,0 +1,48 @@
+Minimum latency comes from making the two model inferences parallel so total model time is the maximum of both, not the sum.
+
+If done right, your end-to-end time behaves like:
+$L_{total} \approx L_{capture} + L_{uplink} + \max(L_{yolo}, L_{depth}) + L_{fusion} + L_{downlink}$
+
+If done sequentially, it becomes:
+$L_{total} \approx L_{capture} + L_{uplink} + L_{yolo} + L_{depth} + L_{fusion} + L_{downlink}$
+
+So parallel execution is the biggest win.
+
+**Recommended low-latency architecture**
+1. Capture one frame on Jetson and send it once to the edge VM.
+2. On edge, decode once and create a single frame packet with a trace id.
+3. Fan out that same packet to two independent inference workers on the same GPU:
+4. YOLO worker for classes and masks/boxes.
+5. Depth worker for depth map.
+6. Run both workers asynchronously and wait for both results for the same trace id.
+7. Fuse outputs per object by projecting YOLO mask pixels onto the depth map.
+8. Send only compact fused metadata back to Jetson, not full raw tensors or full-resolution depth maps each frame.
+
+**How to overlap class and depth robustly**
+1. For each detected object mask $M$, compute object depth as:
+   $d_{obj} = \mathrm{median}(D(p)\ |\ p \in M)$
+2. Also compute spread for confidence:
+   $s_{obj} = P90(D_M) - P10(D_M)$
+3. Use temporal smoothing per tracked object to reduce jitter.
+4. For near/far decision, use normalized per-frame depth percentiles if using relative depth model.
+
+Important: Depth Anything V2 Small standard model gives relative depth, not true metric meters. It is perfect for near/far ranking, but absolute distance needs metric-depth fine-tuned weights and calibration strategy.
+
+**Single-GPU settings that most affect latency**
+1. Keep queue depth at 1 in every stage so stale frames are dropped.
+2. Disable batching delay for real-time path (batch size 1, no dynamic queue wait).
+3. Keep both models warm-loaded at startup; no lazy loading.
+4. Use FP16 engines for both models.
+5. Minimize preprocessing copies (decode once, resize efficiently).
+6. If GPU saturates, reduce depth input size first (for example 518 to 448 or 384) before reducing YOLO quality.
+7. Return only per-object depth stats to Jetson in normal mode; send full depth map only in debug mode.
+
+**Practical deployment path**
+1. Phase 1: Add depth as a second model on the same edge GPU, run parallel requests, fuse, send compact metadata.
+2. Phase 2: Tune model configs and input sizes to hit your latency target at p95.
+3. Phase 3: If still needed, remove extra RPC overhead by tighter in-process GPU execution and CUDA stream tuning.
+
+This design will give you minimum latency while still delivering both model outputs for each processed frame and enabling near/far reasoning for drone decisions.
+
+1. If you want, I can now convert this into an exact implementation plan for your current codebase with the concrete modules and data schema changes.
+2. I can also propose a target latency budget table (capture, uplink, YOLO, depth, fusion, downlink) so you can track bottlenecks objectively.

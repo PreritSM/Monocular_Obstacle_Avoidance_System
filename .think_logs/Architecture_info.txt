@@ -1,0 +1,143 @@
+Pipeline Architecture: Data Flow Audit
+1. End-to-End Architecture
+
+JETSON (Sender)                         EDGE GATEWAY (Inference)
+────────────────                        ────────────────────────
+
+Camera → CameraVideoTrack               @pc.on("track")
+       → WebRTC Video Stream ─────────→ consume_video()
+                                              │
+                                        FramePacket → LatestFrameQueue
+                                              │
+                                        inference_loop()
+                                              │
+                              ┌───────────────┴──────────────┐
+                      YOLO Triton                    Depth Triton
+                       (parallel)                    (parallel)
+                              └───────────────┬──────────────┘
+                                              │
+                                    decode_yolo_segmentation()
+                                    decode_depth_output()
+                                    compute_object_depth_overlap()
+                                              │
+                                      build_metadata()
+                                              │
+                       ┌──────────────────────┼──────────────────────┐
+                   logger.log()         data_channel.send()   visualization_writer
+               edge_session.jsonl      (JSON → Jetson)        {trace_id}.npz
+Entry point: services/edge_gateway/app.py → run_edge() / inference_loop()
+Exit points: JSONL log, RTCDataChannel, NPZ files
+
+2. Metadata Catalog (per inference pass)
+Timestamps / Trace:
+
+Field	Type	Source
+trace_id	str (UUID hex)	Generated at frame capture
+capture_ts_ms	int	Jetson camera capture time
+edge_rx_ts_ms	int	When edge received frame
+inference_ts_ms	int	When inference completed
+age_ms	int	inference_ts_ms - capture_ts_ms
+is_stale	bool	age_ms > stale_threshold_ms
+YOLO Detection (per object):
+
+Field	Type
+class_id	int (COCO80)
+class_name	str
+confidence	float
+bbox_xyxy	[x1,y1,x2,y2] float
+mask	np.ndarray bool 640×640 (NPZ only, stripped from JSONL)
+Depth (frame-level):
+
+Field	Type
+depth_percentiles.p10/p50/p90	float
+spread_p90_p10	float
+depth_map	np.ndarray float32 (NPZ only, stripped from JSONL)
+Fused Overlap (per object):
+
+Field	Type
+depth_median	float
+depth_p10/p90	float
+depth_norm	float (normalized 0–1)
+depth_band	str: "near" / "mid" / "far"
+pixel_count	int
+Timing Breakdown:
+
+Field	Type
+yolo.inference_ms	float
+yolo.decode_ms	float
+depth.inference_ms	float
+depth.decode_ms	float
+fusion_ms	float
+parallel_window_ms	float
+capture_to_edge_rx_ms	int
+edge_rx_to_inference_done_ms	int
+3. Jetson Transmission
+No protobufs used. Transmission is pure JSON over a WebRTC RTCDataChannel named nav_meta.
+
+Send location: services/edge_gateway/app.py:309-310
+
+
+data_channel.send(orjson.dumps(metadata).decode("utf-8"))
+Full metadata dict is sent (all fields from build_metadata() — see Section 2). The Jetson receives it at jetson_client/app.py @metadata_channel.on("message") and logs two events: metadata_rx (full JSON string) and inference_timing_rx (extracted timing fields only).
+
+4. Log Mapping & Output Fields
+Data Flow Table
+Source Component	Field/Data	Destination
+inference_loop()	Full metadata dict	logs/edge_session.jsonl (event: inference_done)
+inference_loop()	Full metadata dict	RTCDataChannel → Jetson
+visualization_dump.py	frame_bgr + masks + depth_map	logs/visualization_artifacts/{trace_id}.npz
+Jetson on_message()	Raw JSON string + rx_time_ms	logs/jetson_session.jsonl (event: metadata_rx)
+Jetson on_message()	10 extracted timing fields	logs/jetson_session.jsonl (event: inference_timing_rx)
+Critical Discrepancies: Runtime vs. Logged
+Field	Runtime Value	JSONL Log	NPZ File
+Per-object mask (bool 640×640)	Computed in decode_yolo_segmentation()	Stripped (compact YOLO objects built at app.py:239-248)	Saved as yolo_masks
+depth_map (float32 HxW)	Full float array	Stripped — only percentiles logged	Saved as depth_map float16
+age_ms	inference_ts_ms - capture_ts_ms	Logged directly	Not in NPZ
+age_ms_reconstructed	Sum of two latency components	Logged in timings	Not in NPZ
+Key takeaway: The JSONL logs contain all scalar/statistical metadata but no large tensors. The NPZ files contain the raw tensors (frames, masks, depth maps) but no timing/staleness metadata. The offline tools/visualize_session_replay.py joins these two by trace_id.
+
+Schema Definitions
+FramePacket (frame_queue.py):
+
+
+@dataclass
+class FramePacket:
+    frame: np.ndarray        # uint8 HxWx3 BGR
+    capture_ts_ms: int
+    trace_id: str            # UUID hex
+VisualizationArtifact (visualization_dump.py):
+
+
+@dataclass
+class VisualizationArtifact:
+    trace_id: str
+    inference_ts_ms: int
+    frame_bgr: np.ndarray    # uint8 HxWx3
+    yolo_masks: np.ndarray   # uint8 NxHxW
+    class_ids: np.ndarray    # int32 N
+    class_names: np.ndarray  # object N
+    confidences: np.ndarray  # float32 N
+    bboxes: np.ndarray       # float32 Nx4 xyxy
+    depth_map: np.ndarray | None  # float16 HxW
+inference_done JSONL row example:
+
+
+{
+  "ts_unix_ms": 1713400000123,
+  "event": "inference_done",
+  "trace_id": "a1b2c3d4...",
+  "capture_ts_ms": 1713400000000,
+  "edge_rx_ts_ms": 1713400000045,
+  "inference_ts_ms": 1713400000120,
+  "age_ms": 120,
+  "is_stale": false,
+  "stale_threshold_ms": 120,
+  "detections": {
+    "status": "ok",
+    "yolo": { "status": "ok", "object_count": 2, "objects": [...], "output_shapes": {...} },
+    "depth": { "status": "ok", "output_name": "select_36", "depth_percentiles": { "p10": 0.12, "p50": 0.45, "p90": 0.78, "spread_p90_p10": 0.66 } },
+    "overlap": { "status": "ok", "object_count": 2, "objects": [...] }
+  },
+  "timings_ms": { "yolo": { "inference_ms": 12.3, "decode_ms": 1.2 }, "depth": { "inference_ms": 18.7, "decode_ms": 0.8 }, "fusion_ms": 0.4, "parallel_window_ms": 20.1, "capture_to_edge_rx_ms": 45, "edge_rx_to_inference_done_ms": 75, "age_ms_reconstructed": 120 }
+}
+Architecture is fully mapped. Ready to receive your visualization requirements.
