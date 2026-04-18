@@ -1,7 +1,18 @@
+#!/usr/bin/env python3
+"""
+Interactive session replay: frame-by-frame YOLO segmentation + depth map viewer.
+
+Run after a WebRTC session closes. Joins edge_session.jsonl with NPZ artifacts
+by trace_id. Frames missing an NPZ are silently skipped.
+
+Controls:
+  Any key   → advance one frame
+  q / ESC   → quit
+  Trackbars → adjust near/far depth thresholds live (recalors masks instantly)
+"""
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -11,115 +22,85 @@ try:
     import cv2
 except ModuleNotFoundError as exc:
     raise SystemExit(
-        "Missing dependency: opencv-python. Install with: "
-        "python3 -m pip install -r tools/requirements.txt"
+        "Missing dependency: opencv-python.  "
+        "pip install -r tools/requirements.txt"
     ) from exc
 
 try:
     import numpy as np
 except ModuleNotFoundError as exc:
     raise SystemExit(
-        "Missing dependency: numpy. Install with: "
-        "python3 -m pip install -r tools/requirements.txt"
+        "Missing dependency: numpy.  "
+        "pip install -r tools/requirements.txt"
     ) from exc
 
 
-@dataclass
-class FrameRecord:
-    trace_id: str
-    ts_ms: int
-    age_ms: float
-    stale_threshold_ms: float
-    is_stale: bool
-    yolo_inference_ms: float
-    depth_inference_ms: float
-    capture_to_edge_ms: float
-    edge_to_done_ms: float
-    object_count: int
+# ── window / UI constants ───────────────────────────────────────────────────
+
+WIN_YOLO  = "YOLO Segmentation"
+WIN_DEPTH = "Depth Map"
+WIN_CTRL  = "Controls"
+
+# BGR colours for each depth band
+BAND_COLOR: dict[str, tuple[int, int, int]] = {
+    "near": (0,   60, 220),   # red
+    "mid":  (0,  200, 220),   # yellow
+    "far":  (60, 200,  60),   # green
+}
+
+DEFAULT_NEAR_PCT = 35   # trackbar default (0-100 → 0.0-1.0)
+DEFAULT_FAR_PCT  = 65
 
 
-def _num(value: Any, default: float = 0.0) -> float:
-    if isinstance(value, (int, float)):
-        return float(value)
-    return default
+# ── helpers ─────────────────────────────────────────────────────────────────
+
+def _num(v: Any, default: float = 0.0) -> float:
+    return float(v) if isinstance(v, (int, float)) else default
 
 
-def _load_jsonl_rows(path: str) -> list[dict[str, Any]]:
+def _text(
+    img: np.ndarray,
+    txt: str,
+    x: int,
+    y: int,
+    scale: float = 0.50,
+    color: tuple[int, int, int] = (220, 220, 220),
+    thickness: int = 1,
+) -> None:
+    cv2.putText(
+        img, txt, (x, y),
+        cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness, cv2.LINE_AA,
+    )
+
+
+def _stale_border(img: np.ndarray) -> None:
+    h, w = img.shape[:2]
+    cv2.rectangle(img, (0, 0), (w - 1, h - 1), (0, 0, 220), 6)
+
+
+def _band_from_norm(depth_norm: float, near_t: float, far_t: float) -> str:
+    if depth_norm < near_t:
+        return "near"
+    if depth_norm > far_t:
+        return "far"
+    return "mid"
+
+
+# ── data loading ─────────────────────────────────────────────────────────────
+
+def _load_inference_rows(path: Path) -> list[dict[str, Any]]:
+    """Read every inference_done row from a JSONL file, sorted by inference_ts_ms."""
     rows: list[dict[str, Any]] = []
-    with Path(path).open("rb") as f:
-        for line in f:
+    with path.open("rb") as fh:
+        for line in fh:
             try:
                 obj = orjson.loads(line)
             except orjson.JSONDecodeError:
                 continue
-            if isinstance(obj, dict):
+            if isinstance(obj, dict) and obj.get("event") == "inference_done":
                 rows.append(obj)
+    rows.sort(key=lambda r: int(_num(r.get("inference_ts_ms"), 0)))
     return rows
-
-
-def _build_frames(jetson_rows: list[dict[str, Any]], edge_rows: list[dict[str, Any]]) -> list[FrameRecord]:
-    by_trace: dict[str, dict[str, Any]] = {}
-
-    for row in edge_rows:
-        if row.get("event") != "inference_done":
-            continue
-        trace_id = row.get("trace_id")
-        if isinstance(trace_id, str):
-            by_trace.setdefault(trace_id, {})["payload"] = row
-
-    for row in jetson_rows:
-        if row.get("event") != "metadata_rx":
-            continue
-        raw_msg = row.get("message")
-        if not isinstance(raw_msg, str):
-            continue
-        try:
-            payload = orjson.loads(raw_msg)
-        except orjson.JSONDecodeError:
-            continue
-        if not isinstance(payload, dict):
-            continue
-        trace_id = payload.get("trace_id")
-        if isinstance(trace_id, str):
-            by_trace.setdefault(trace_id, {})["payload"] = payload
-
-    frames: list[FrameRecord] = []
-    for trace_id, slot in by_trace.items():
-        payload = slot.get("payload")
-        if not isinstance(payload, dict):
-            continue
-
-        timings = payload.get("timings_ms") if isinstance(payload.get("timings_ms"), dict) else {}
-        yolo_t = timings.get("yolo") if isinstance(timings.get("yolo"), dict) else {}
-        depth_t = timings.get("depth") if isinstance(timings.get("depth"), dict) else {}
-        detections = payload.get("detections") if isinstance(payload.get("detections"), dict) else {}
-        yolo_det = detections.get("yolo") if isinstance(detections.get("yolo"), dict) else {}
-
-        ts_ms = int(_num(payload.get("inference_ts_ms"), 0.0))
-        if ts_ms <= 0:
-            continue
-
-        frames.append(
-            FrameRecord(
-                trace_id=trace_id,
-                ts_ms=ts_ms,
-                age_ms=_num(payload.get("age_ms"), 0.0),
-                stale_threshold_ms=_num(payload.get("stale_threshold_ms"), 120.0),
-                is_stale=bool(payload.get("is_stale")),
-                yolo_inference_ms=_num(yolo_t.get("inference_ms"), 0.0),
-                depth_inference_ms=_num(depth_t.get("inference_ms"), 0.0),
-                capture_to_edge_ms=_num(timings.get("capture_to_edge_rx_ms"), 0.0),
-                edge_to_done_ms=_num(timings.get("edge_rx_to_inference_done_ms"), 0.0),
-                object_count=int(_num(yolo_det.get("object_count"), 0.0)),
-            )
-        )
-
-    frames.sort(key=lambda x: x.ts_ms)
-    return frames
-
-
-def _draw_text(img: np.ndarray, text: str, x: int, y: int, scale: float = 0.58, color: tuple[int, int, int] = (220, 220, 220), thickness: int = 1) -> None:
-    cv2.putText(img, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness, lineType=cv2.LINE_AA)
 
 
 def _load_artifact(artifact_dir: Path, trace_id: str) -> dict[str, Any] | None:
@@ -127,244 +108,288 @@ def _load_artifact(artifact_dir: Path, trace_id: str) -> dict[str, Any] | None:
     if not path.exists():
         return None
     data = np.load(path, allow_pickle=True)
-    out: dict[str, Any] = {}
-    for key in data.files:
-        out[key] = data[key]
-    return out
+    return {k: data[k] for k in data.files}
 
 
-def _color_for_index(i: int) -> tuple[int, int, int]:
-    palette = [
-        (40, 220, 255),
-        (255, 120, 50),
-        (140, 255, 80),
-        (255, 80, 180),
-        (80, 180, 255),
-        (220, 220, 80),
+def _overlap_objects(row: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract the fused overlap object list from an inference_done row."""
+    detections = row.get("detections")
+    if not isinstance(detections, dict):
+        return []
+    overlap = detections.get("overlap")
+    if not isinstance(overlap, dict):
+        return []
+    objs = overlap.get("objects")
+    return objs if isinstance(objs, list) else []
+
+
+def _depth_percentiles(row: dict[str, Any]) -> dict[str, float]:
+    detections = row.get("detections") or {}
+    depth_info  = detections.get("depth") or {}
+    pcts        = depth_info.get("depth_percentiles") or {}
+    return {
+        "p10":    _num(pcts.get("p10")),
+        "p50":    _num(pcts.get("p50")),
+        "p90":    _num(pcts.get("p90")),
+        "spread": _num(pcts.get("spread_p90_p10")),
+    }
+
+
+# ── YOLO window render ────────────────────────────────────────────────────────
+
+def render_yolo(
+    artifact:       dict[str, Any],
+    overlap_objs:   list[dict[str, Any]],
+    is_stale:       bool,
+    near_t:         float,
+    far_t:          float,
+    frame_idx:      int,
+    total:          int,
+) -> np.ndarray:
+    """
+    Black canvas at mask native resolution.
+    Masks coloured by live depth band (slider-driven).
+    Labels: class_name | conf | band | depth_median
+    """
+    masks:       np.ndarray | None = artifact.get("yolo_masks")
+    class_names: np.ndarray | None = artifact.get("class_names")
+    confidences: np.ndarray | None = artifact.get("confidences")
+    bboxes:      np.ndarray | None = artifact.get("bboxes")
+    frame_bgr:   np.ndarray | None = artifact.get("frame_bgr")
+
+    # determine canvas size from mask or frame dims
+    if isinstance(masks, np.ndarray) and masks.ndim == 3 and masks.shape[0] > 0:
+        H, W = int(masks.shape[1]), int(masks.shape[2])
+    elif isinstance(frame_bgr, np.ndarray) and frame_bgr.ndim == 3:
+        H, W = int(frame_bgr.shape[0]), int(frame_bgr.shape[1])
+    else:
+        H, W = 480, 640
+
+    canvas = np.zeros((H, W, 3), dtype=np.uint8)
+
+    # per-object depth_norm from JSONL (drives live band recolouring)
+    depth_norms: list[float] = [
+        _num(o.get("depth_norm"), 0.5) for o in overlap_objs
     ]
-    return palette[i % len(palette)]
 
+    # draw filled masks
+    if isinstance(masks, np.ndarray) and masks.ndim == 3:
+        for i in range(masks.shape[0]):
+            dn   = depth_norms[i] if i < len(depth_norms) else 0.5
+            band = _band_from_norm(dn, near_t, far_t)
+            canvas[masks[i] > 0] = BAND_COLOR[band]
 
-def _render_yolo_board(artifact: dict[str, Any], width: int, height: int) -> np.ndarray:
-    board = np.zeros((height, width, 3), dtype=np.uint8)
-    _draw_text(board, "YOLO Segmentation Masks (Blackboard)", 20, 32, scale=0.8, color=(255, 255, 255), thickness=2)
-
-    frame = artifact.get("frame_bgr")
-    masks = artifact.get("yolo_masks")
-    class_names = artifact.get("class_names")
-    confidences = artifact.get("confidences")
-    bboxes = artifact.get("bboxes")
-
-    if isinstance(frame, np.ndarray) and frame.ndim == 3:
-        thumb_w = min(380, width // 3)
-        thumb_h = int(frame.shape[0] * (thumb_w / frame.shape[1]))
-        thumb = cv2.resize(frame, (thumb_w, thumb_h), interpolation=cv2.INTER_LINEAR)
-        board[50 : 50 + thumb_h, 20 : 20 + thumb_w] = thumb
-        _draw_text(board, "camera frame (inset)", 20, 50 + thumb_h + 20, scale=0.5, color=(160, 160, 160))
-
-    if not isinstance(masks, np.ndarray) or masks.ndim != 3 or masks.shape[0] == 0:
-        _draw_text(board, "No YOLO masks available for this frame.", 20, height // 2, scale=0.7, color=(180, 180, 180))
-        return board
-
-    mh, mw = masks.shape[1], masks.shape[2]
-    overlay = np.zeros((mh, mw, 3), dtype=np.uint8)
-
-    for i in range(masks.shape[0]):
-        mask = masks[i] > 0
-        color = _color_for_index(i)
-        overlay[mask] = color
-
-    overlay = cv2.resize(overlay, (width, height), interpolation=cv2.INTER_NEAREST)
-    board = cv2.addWeighted(board, 1.0, overlay, 0.55, 0)
-
+    # draw bounding boxes + labels
     if isinstance(bboxes, np.ndarray) and bboxes.ndim == 2 and bboxes.shape[1] == 4:
-        sx = width / float(mw)
-        sy = height / float(mh)
-        for i in range(min(bboxes.shape[0], masks.shape[0])):
-            x1, y1, x2, y2 = [float(v) for v in bboxes[i]]
-            p1 = (int(x1 * sx), int(y1 * sy))
-            p2 = (int(x2 * sx), int(y2 * sy))
-            color = _color_for_index(i)
-            cv2.rectangle(board, p1, p2, color, 2)
-            cls = "obj"
-            conf = 0.0
-            if isinstance(class_names, np.ndarray) and i < class_names.shape[0]:
-                cls = str(class_names[i])
-            if isinstance(confidences, np.ndarray) and i < confidences.shape[0]:
-                conf = float(confidences[i])
-            _draw_text(board, f"{cls} {conf:.2f}", p1[0], max(20, p1[1] - 6), scale=0.52, color=color, thickness=2)
+        n = bboxes.shape[0]
+        for i in range(n):
+            x1, y1, x2, y2 = (int(float(v)) for v in bboxes[i])
+            dn   = depth_norms[i] if i < len(depth_norms) else 0.5
+            band = _band_from_norm(dn, near_t, far_t)
+            color = BAND_COLOR[band]
 
-    return board
+            cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
+
+            cls  = str(class_names[i]) if isinstance(class_names, np.ndarray) and i < len(class_names) else "obj"
+            conf = float(confidences[i]) if isinstance(confidences, np.ndarray) and i < len(confidences) else 0.0
+            d_med = _num(overlap_objs[i].get("depth_median")) if i < len(overlap_objs) else 0.0
+            label = f"{cls}  {conf:.2f}  {band}  d={d_med:.3f}"
+            _text(canvas, label, x1 + 2, max(14, y1 - 5), scale=0.46, color=color, thickness=1)
+
+    # HUD: frame counter + active thresholds
+    _text(canvas, f"frame {frame_idx + 1}/{total}", 6, 16, scale=0.48, color=(200, 200, 200))
+    _text(canvas, f"near < {near_t:.2f}  |  far > {far_t:.2f}", 6, H - 8, scale=0.44, color=(160, 160, 160))
+
+    if is_stale:
+        _stale_border(canvas)
+        _text(canvas, "STALE", W - 72, 22, scale=0.55, color=(0, 0, 220), thickness=2)
+
+    return canvas
 
 
-def _render_depth_map(artifact: dict[str, Any], width: int, height: int) -> np.ndarray:
-    panel = np.zeros((height, width, 3), dtype=np.uint8)
-    _draw_text(panel, "Depth Map", 20, 32, scale=0.8, color=(255, 255, 255), thickness=2)
+# ── Depth window render ───────────────────────────────────────────────────────
 
-    depth_map = artifact.get("depth_map")
+def render_depth(
+    artifact:  dict[str, Any],
+    row:       dict[str, Any],
+    is_stale:  bool,
+    near_t:    float,
+    far_t:     float,
+    frame_idx: int,
+    total:     int,
+) -> np.ndarray:
+    """
+    COLORMAP_VIRIDIS depth map.
+    Overlay: p10/p50/p90 text + colorbar with near/far threshold lines.
+    """
+    depth_map: np.ndarray | None = artifact.get("depth_map")
+
     if not isinstance(depth_map, np.ndarray) or depth_map.size == 0:
-        _draw_text(panel, "No depth map available for this frame.", 20, height // 2, scale=0.7, color=(180, 180, 180))
+        panel = np.zeros((480, 640, 3), dtype=np.uint8)
+        _text(panel, "No depth map in artifact", 20, 240, scale=0.65, color=(180, 180, 180))
         return panel
 
     depth = depth_map.astype(np.float32)
     finite = np.isfinite(depth)
     if not finite.any():
-        _draw_text(panel, "Depth map values are non-finite.", 20, height // 2, scale=0.7, color=(180, 180, 180))
+        panel = np.zeros((480, 640, 3), dtype=np.uint8)
+        _text(panel, "Depth map contains no finite values", 20, 240, scale=0.55)
         return panel
 
-    d_min = float(np.percentile(depth[finite], 2.0))
-    d_max = float(np.percentile(depth[finite], 98.0))
+    # normalise to [1%, 99%] to suppress outliers
+    d_min = float(np.percentile(depth[finite], 1.0))
+    d_max = float(np.percentile(depth[finite], 99.0))
     if d_max <= d_min:
         d_max = d_min + 1e-6
 
-    norm = np.clip((depth - d_min) / (d_max - d_min), 0.0, 1.0)
+    norm     = np.clip((depth - d_min) / (d_max - d_min), 0.0, 1.0)
     depth_u8 = (norm * 255.0).astype(np.uint8)
-    color = cv2.applyColorMap(depth_u8, cv2.COLORMAP_TURBO)
-    color = cv2.resize(color, (width, height), interpolation=cv2.INTER_LINEAR)
+    panel    = cv2.applyColorMap(depth_u8, cv2.COLORMAP_VIRIDIS)
+    panel    = cv2.resize(panel, (640, 480), interpolation=cv2.INTER_LINEAR)
 
-    panel = color
-    _draw_text(panel, "Depth Map", 20, 32, scale=0.8, color=(255, 255, 255), thickness=2)
-    _draw_text(panel, f"p02={d_min:.3f}  p98={d_max:.3f}", 20, 58, scale=0.55, color=(255, 255, 255))
+    # percentiles from JSONL metadata
+    pcts = _depth_percentiles(row)
+    _text(panel,
+          f"p10={pcts['p10']:.3f}   p50={pcts['p50']:.3f}   p90={pcts['p90']:.3f}   spread={pcts['spread']:.3f}",
+          8, 20, scale=0.48, color=(255, 255, 255))
+    _text(panel, f"raw [{d_min:.3f}, {d_max:.3f}]", 8, 40, scale=0.42, color=(200, 200, 200))
+    _text(panel, f"frame {frame_idx + 1}/{total}", 8, 468, scale=0.44, color=(200, 200, 200))
+
+    # ── colorbar with threshold lines ──────────────────────────────────────
+    bar_x          = 608
+    bar_y0, bar_y1 = 60, 420
+    bar_h          = bar_y1 - bar_y0
+    bar_w          = 18
+
+    for yy in range(bar_h):
+        t   = 1.0 - (yy / bar_h)          # top = high intensity
+        val = int(t * 255)
+        col = cv2.applyColorMap(np.array([[val]], dtype=np.uint8), cv2.COLORMAP_VIRIDIS)[0, 0].tolist()
+        cv2.line(panel, (bar_x, bar_y0 + yy), (bar_x + bar_w, bar_y0 + yy), col, 1)
+
+    # near threshold line (low depth_norm = near = low bar position)
+    near_y = bar_y1 - int(near_t * bar_h)
+    far_y  = bar_y1 - int(far_t  * bar_h)
+    cv2.line(panel, (bar_x - 5, near_y), (bar_x + bar_w + 5, near_y), (0, 60, 220), 2)
+    cv2.line(panel, (bar_x - 5, far_y),  (bar_x + bar_w + 5, far_y),  (60, 200, 60), 2)
+    _text(panel, "near", bar_x - 42, near_y + 4, scale=0.37, color=(0, 60, 220))
+    _text(panel, "far",  bar_x - 34, far_y  + 4, scale=0.37, color=(60, 200, 60))
+
+    if is_stale:
+        _stale_border(panel)
+        _text(panel, "STALE", 640 - 72, 22, scale=0.55, color=(0, 0, 220), thickness=2)
+
     return panel
 
 
+# ── controls window ───────────────────────────────────────────────────────────
+
+def _create_controls_window() -> None:
+    ctrl = np.zeros((110, 400, 3), dtype=np.uint8)
+    _text(ctrl, "Depth Band Calibration", 10, 24, scale=0.58, color=(255, 255, 255))
+    _text(ctrl, "near threshold  (0-100 → 0.0-1.0)", 10, 52, scale=0.42, color=(160, 160, 160))
+    _text(ctrl, "far  threshold  (0-100 → 0.0-1.0)", 10, 72, scale=0.42, color=(160, 160, 160))
+    _text(ctrl, "any key = next frame   q/ESC = quit", 10, 96, scale=0.40, color=(120, 120, 120))
+    cv2.imshow(WIN_CTRL, ctrl)
+    cv2.createTrackbar("near (x0.01)", WIN_CTRL, DEFAULT_NEAR_PCT, 100, lambda _: None)
+    cv2.createTrackbar("far  (x0.01)", WIN_CTRL, DEFAULT_FAR_PCT,  100, lambda _: None)
+
+
+def _read_thresholds() -> tuple[float, float]:
+    near_t = cv2.getTrackbarPos("near (x0.01)", WIN_CTRL) / 100.0
+    far_t  = cv2.getTrackbarPos("far  (x0.01)", WIN_CTRL) / 100.0
+    # clamp so near is always below far
+    near_t = min(near_t, far_t - 0.01)
+    return near_t, far_t
+
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description=(
-            "Offline replay from jetson + edge JSONL logs. Optionally consumes detached "
-            "visualization artifacts to render YOLO mask board and depth-map videos."
-        )
-    )
-    parser.add_argument("--jetson-input", required=True)
-    parser.add_argument("--edge-input", required=True)
-    parser.add_argument("--artifact-dir", default="logs/visualization_artifacts")
-    parser.add_argument("--telemetry-output", default="logs/session_replay.mp4")
-    parser.add_argument("--yolo-output", default="logs/session_yolo_masks.mp4")
-    parser.add_argument("--depth-output", default="logs/session_depth_map.mp4")
-    parser.add_argument("--fps", type=int, default=15)
-    parser.add_argument("--width", type=int, default=1280)
-    parser.add_argument("--height", type=int, default=720)
-    parser.add_argument("--max-frames", type=int, default=0)
-    parser.add_argument(
-        "--show-window",
-        action=argparse.BooleanOptionalAction,
-        default=False,
+        description="Interactive frame-by-frame YOLO + Depth session replay."
     )
     parser.add_argument(
-        "--render-telemetry",
-        action=argparse.BooleanOptionalAction,
-        default=True,
+        "--edge-input",
+        default="logs/edge_session.jsonl",
+        help="Path to edge_session.jsonl",
+    )
+    parser.add_argument(
+        "--artifact-dir",
+        default="logs/visualization_artifacts",
+        help="Directory containing {trace_id}.npz files",
     )
     args = parser.parse_args()
 
-    jetson_rows = _load_jsonl_rows(args.jetson_input)
-    edge_rows = _load_jsonl_rows(args.edge_input)
-    frames = _build_frames(jetson_rows, edge_rows)
-    if not frames:
-        raise SystemExit("No correlated replay frames found.")
-
-    total_frames = len(frames) if args.max_frames <= 0 else min(len(frames), int(args.max_frames))
-    width = max(640, int(args.width))
-    height = max(480, int(args.height))
-    fps = max(1, int(args.fps))
-
-    Path(args.telemetry_output).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.yolo_output).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.depth_output).parent.mkdir(parents=True, exist_ok=True)
-
-    telemetry_writer = None
-    if args.render_telemetry:
-        telemetry_writer = cv2.VideoWriter(
-            args.telemetry_output,
-            cv2.VideoWriter_fourcc(*"mp4v"),
-            float(fps),
-            (width, height),
-        )
-        if not telemetry_writer.isOpened():
-            raise SystemExit(f"Failed to open telemetry video writer: {args.telemetry_output}")
-
-    yolo_writer = cv2.VideoWriter(
-        args.yolo_output,
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        float(fps),
-        (width, height),
-    )
-    if not yolo_writer.isOpened():
-        raise SystemExit(f"Failed to open YOLO video writer: {args.yolo_output}")
-
-    depth_writer = cv2.VideoWriter(
-        args.depth_output,
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        float(fps),
-        (width, height),
-    )
-    if not depth_writer.isOpened():
-        raise SystemExit(f"Failed to open depth video writer: {args.depth_output}")
-
+    edge_path    = Path(args.edge_input)
     artifact_dir = Path(args.artifact_dir)
-    artifact_hits = 0
 
-    for i in range(total_frames):
-        rec = frames[i]
-        artifact = _load_artifact(artifact_dir, rec.trace_id)
+    if not edge_path.exists():
+        raise SystemExit(f"JSONL not found: {edge_path}")
 
-        if artifact is not None:
-            artifact_hits += 1
-            yolo_frame = _render_yolo_board(artifact, width, height)
-            depth_frame = _render_depth_map(artifact, width, height)
+    print(f"Loading inference rows from: {edge_path}")
+    all_rows = _load_inference_rows(edge_path)
+    print(f"  {len(all_rows)} inference_done rows loaded")
+
+    # filter to only rows that have a matching NPZ
+    paired: list[dict[str, Any]] = []
+    skipped = 0
+    for row in all_rows:
+        trace_id = row.get("trace_id", "")
+        if (artifact_dir / f"{trace_id}.npz").exists():
+            paired.append(row)
         else:
-            yolo_frame = np.zeros((height, width, 3), dtype=np.uint8)
-            depth_frame = np.zeros((height, width, 3), dtype=np.uint8)
-            _draw_text(yolo_frame, "YOLO Segmentation Masks (Blackboard)", 20, 32, scale=0.8, color=(255, 255, 255), thickness=2)
-            _draw_text(yolo_frame, f"No artifact for trace_id={rec.trace_id[:12]}...", 20, 80, scale=0.62, color=(180, 180, 180))
-            _draw_text(depth_frame, "Depth Map", 20, 32, scale=0.8, color=(255, 255, 255), thickness=2)
-            _draw_text(depth_frame, f"No artifact for trace_id={rec.trace_id[:12]}...", 20, 80, scale=0.62, color=(180, 180, 180))
+            skipped += 1
 
-        yolo_writer.write(yolo_frame)
-        depth_writer.write(depth_frame)
+    print(f"  {len(paired)} frames with NPZ  |  {skipped} skipped (no artifact)")
 
-        if telemetry_writer is not None:
-            tele = np.zeros((height, width, 3), dtype=np.uint8)
-            _draw_text(tele, "Offline Telemetry Replay", 20, 34, scale=0.82, color=(255, 255, 255), thickness=2)
-            _draw_text(tele, "Detached mode: reads JSONL and artifact files after the run.", 20, 62, scale=0.52, color=(160, 160, 160))
-            stale_color = (0, 220, 255) if rec.is_stale else (60, 180, 60)
-            cv2.rectangle(tele, (width - 220, 18), (width - 24, 56), stale_color, -1)
-            _draw_text(tele, "STALE" if rec.is_stale else "FRESH", width - 170, 45, scale=0.66, color=(0, 0, 0), thickness=2)
-            _draw_text(tele, f"frame {i + 1}/{total_frames}", 20, 110)
-            _draw_text(tele, f"trace_id: {rec.trace_id}", 20, 138, scale=0.5)
-            _draw_text(tele, f"age_ms: {rec.age_ms:.2f}  threshold_ms: {rec.stale_threshold_ms:.0f}", 20, 176, scale=0.68, color=(200, 230, 255), thickness=2)
-            _draw_text(tele, f"yolo_inference_ms: {rec.yolo_inference_ms:.2f}", 20, 214, color=(80, 255, 255))
-            _draw_text(tele, f"depth_inference_ms: {rec.depth_inference_ms:.2f}", 20, 242, color=(255, 180, 80))
-            _draw_text(tele, f"capture_to_edge_ms: {rec.capture_to_edge_ms:.2f}", 20, 270)
-            _draw_text(tele, f"edge_to_done_ms: {rec.edge_to_done_ms:.2f}", 20, 298)
-            _draw_text(tele, f"yolo_object_count: {rec.object_count}", 20, 326)
-            _draw_text(tele, f"artifact_available: {'yes' if artifact is not None else 'no'}", 20, 354)
-            telemetry_writer.write(tele)
+    if not paired:
+        raise SystemExit(
+            "No frames with matching NPZ artifacts found.  "
+            "Check --artifact-dir and that visualization_dump_enabled=true in your config."
+        )
 
-        if args.show_window:
-            cv2.imshow("yolo_masks_blackboard", yolo_frame)
-            cv2.imshow("depth_map", depth_frame)
-            if telemetry_writer is not None:
-                cv2.imshow("telemetry", tele)
-            key = cv2.waitKey(max(1, int(1000 / fps)))
-            if key == ord("q") or key == 27:
-                break
+    total = len(paired)
 
-    yolo_writer.release()
-    depth_writer.release()
-    if telemetry_writer is not None:
-        telemetry_writer.release()
-    if args.show_window:
-        cv2.destroyAllWindows()
+    # open windows
+    cv2.namedWindow(WIN_YOLO,  cv2.WINDOW_NORMAL)
+    cv2.namedWindow(WIN_DEPTH, cv2.WINDOW_NORMAL)
+    cv2.namedWindow(WIN_CTRL,  cv2.WINDOW_NORMAL)
+    _create_controls_window()
 
-    print("Replay rendered successfully")
-    print(f"- frames={total_frames}")
-    print(f"- artifact_hits={artifact_hits}")
-    print(f"- yolo_output={args.yolo_output}")
-    print(f"- depth_output={args.depth_output}")
-    if telemetry_writer is not None:
-        print(f"- telemetry_output={args.telemetry_output}")
-    print("- mode=offline_detached")
+    print(f"\nShowing {total} frames.  any key = next frame  |  q/ESC = quit\n")
+
+    for idx, row in enumerate(paired):
+        trace_id = row.get("trace_id", "")
+        is_stale = bool(row.get("is_stale"))
+        artifact = _load_artifact(artifact_dir, trace_id)
+
+        if artifact is None:
+            # shouldn't happen after filtering, but guard anyway
+            continue
+
+        overlap_objs = _overlap_objects(row)
+        near_t, far_t = _read_thresholds()
+
+        yolo_frame  = render_yolo(artifact, overlap_objs, is_stale, near_t, far_t, idx, total)
+        depth_frame = render_depth(artifact, row, is_stale, near_t, far_t, idx, total)
+
+        cv2.imshow(WIN_YOLO,  yolo_frame)
+        cv2.imshow(WIN_DEPTH, depth_frame)
+
+        stale_tag = "  [STALE]" if is_stale else ""
+        n_objs    = len(overlap_objs)
+        age_ms    = _num(row.get("age_ms"))
+        print(f"  [{idx + 1:>4}/{total}]  trace={trace_id[:12]}  objs={n_objs}  age={age_ms:.0f}ms{stale_tag}")
+
+        # wait indefinitely for a keypress (frame-by-frame advance)
+        key = cv2.waitKey(0) & 0xFF
+        if key in (ord("q"), 27):   # q or ESC
+            print("Quit.")
+            break
+
+    cv2.destroyAllWindows()
+    print("\nReplay complete.")
 
 
 if __name__ == "__main__":

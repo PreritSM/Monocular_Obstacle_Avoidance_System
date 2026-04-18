@@ -31,6 +31,6 @@ runtime:
   max_objects_per_frame: 10
   depth_near_threshold: 0.35
   depth_far_threshold: 0.65
-  visualization_dump_enabled: false
+  visualization_dump_enabled: true
   visualization_dump_dir: logs/visualization_artifacts
   visualization_dump_queue: 8
