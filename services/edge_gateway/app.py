@@ -133,6 +133,21 @@ async def run_edge(config: dict[str, Any], clean_log: bool = True) -> None:
         async def consume_video() -> None:
             while True:
                 frame: av.VideoFrame = await track.recv()
+
+                # The aiortc decoder thread pushes every decoded frame into an
+                # unbounded asyncio.Queue on the track. If the event loop was
+                # occupied during the previous inference pass, multiple frames
+                # pile up there in FIFO order. Drain them here so we always
+                # stamp capture_ts_ms against the freshest available frame
+                # rather than one that has been waiting in the queue.
+                _internal_q = getattr(track, "_queue", None)
+                if _internal_q is not None:
+                    while not _internal_q.empty():
+                        try:
+                            frame = _internal_q.get_nowait()
+                        except Exception:
+                            break
+
                 frame_np = frame.to_ndarray(format="bgr24")
                 now_ms = int(time.time() * 1000)
                 trace_id = uuid.uuid4().hex
