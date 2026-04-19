@@ -2,6 +2,12 @@
 -r services/edge_gateway/requirements.txt
 -r services/signaling_self_hosted/requirements.txt
 -r tools/requirements.txt
+
+# Build-time calibration dependencies used by scripts/build_triton_engine.sh
+onnxruntime==1.24.4
+ultralytics==8.4.36
+opencv-python==4.11.0.86
+
 pytest==8.3.5
 ruff==0.11.2
 pyyaml==6.0.2

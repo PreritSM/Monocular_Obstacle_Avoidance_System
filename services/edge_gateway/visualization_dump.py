@@ -5,6 +5,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import shutil
 
 import av
 import numpy as np
@@ -24,12 +25,21 @@ class VisualizationArtifact:
 
 
 class AsyncVisualizationDumpWriter:
-    def __init__(self, output_dir: str, max_queue_size: int = 8) -> None:
+    def __init__(self, output_dir: str, max_queue_size: int = 8, clear_existing: bool = True) -> None:
         self._output_dir = Path(output_dir)
         self._output_dir.mkdir(parents=True, exist_ok=True)
+        if clear_existing:
+            self._clear_output_dir()
         self._queue: queue.Queue[VisualizationArtifact | None] = queue.Queue(maxsize=max_queue_size)
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+
+    def _clear_output_dir(self) -> None:
+        for item in self._output_dir.iterdir():
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
 
     def submit(
         self,
