@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 import orjson
-from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCPeerConnection, RTCRtpSender, RTCSessionDescription
 from aiortc.rtcconfiguration import RTCConfiguration, RTCIceServer
 from aiortc.sdp import candidate_from_sdp
 
@@ -129,7 +129,17 @@ async def run_sender(config: dict[str, Any], clean_log: bool = True) -> None:
             },
         )
 
-    pc.addTrack(CameraVideoTrack(adapter))
+    sender = pc.addTrack(CameraVideoTrack(adapter))
+
+    # Prefer VP8: libvpx with deadline=realtime + lag-in-frames=0 encodes faster
+    # per-frame than libx264 on CPU, reducing sender-side encoding latency.
+    _caps = RTCRtpSender.getCapabilities("video")
+    _vp8  = [c for c in _caps.codecs if c.mimeType == "video/VP8"]
+    _rest = [c for c in _caps.codecs if c.mimeType != "video/VP8"]
+    for _t in pc.getTransceivers():
+        if _t.sender is sender:
+            _t.setCodecPreferences(_vp8 + _rest)
+            break
 
     offer = await pc.createOffer()
     await pc.setLocalDescription(offer)

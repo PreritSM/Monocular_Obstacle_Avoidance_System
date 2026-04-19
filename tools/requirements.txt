@@ -1,2 +1,4 @@
 pyyaml==6.0.2
 orjson==3.10.16
+numpy==2.2.4
+opencv-python==4.11.0.86

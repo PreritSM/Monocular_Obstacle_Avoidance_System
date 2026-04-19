@@ -7,6 +7,7 @@ import uuid
 from typing import Any
 
 import av
+import numpy as np
 import orjson
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.rtcconfiguration import RTCConfiguration, RTCIceServer
@@ -24,6 +25,7 @@ from services.edge_gateway.triton_infer import (
     InferenceConfig,
     TritonModelClient,
 )
+from services.edge_gateway.visualization_dump import AsyncVisualizationDumpWriter
 
 
 async def _wait_for_ice_gathering_complete(pc: RTCPeerConnection, timeout_s: float = 3.0) -> None:
@@ -99,6 +101,16 @@ async def run_edge(config: dict[str, Any], clean_log: bool = True) -> None:
     yolo_score_threshold = float(runtime_cfg.get("yolo_score_threshold", 0.25))
     yolo_mask_threshold = float(runtime_cfg.get("yolo_mask_threshold", 0.5))
     max_objects_per_frame = int(runtime_cfg.get("max_objects_per_frame", 20))
+    visualization_dump_enabled = bool(runtime_cfg.get("visualization_dump_enabled", False))
+    visualization_dump_dir = str(runtime_cfg.get("visualization_dump_dir", "logs/visualization_artifacts"))
+    visualization_dump_queue = int(runtime_cfg.get("visualization_dump_queue", 8))
+
+    visualization_writer = None
+    if visualization_dump_enabled:
+        visualization_writer = AsyncVisualizationDumpWriter(
+            output_dir=visualization_dump_dir,
+            max_queue_size=max(1, visualization_dump_queue),
+        )
 
     data_channel = None
 
@@ -121,6 +133,21 @@ async def run_edge(config: dict[str, Any], clean_log: bool = True) -> None:
         async def consume_video() -> None:
             while True:
                 frame: av.VideoFrame = await track.recv()
+
+                # The aiortc decoder thread pushes every decoded frame into an
+                # unbounded asyncio.Queue on the track. If the event loop was
+                # occupied during the previous inference pass, multiple frames
+                # pile up there in FIFO order. Drain them here so we always
+                # stamp capture_ts_ms against the freshest available frame
+                # rather than one that has been waiting in the queue.
+                _internal_q = getattr(track, "_queue", None)
+                if _internal_q is not None:
+                    while not _internal_q.empty():
+                        try:
+                            frame = _internal_q.get_nowait()
+                        except Exception:
+                            break
+
                 frame_np = frame.to_ndarray(format="bgr24")
                 now_ms = int(time.time() * 1000)
                 trace_id = uuid.uuid4().hex
@@ -280,6 +307,19 @@ async def run_edge(config: dict[str, Any], clean_log: bool = True) -> None:
                 stale_threshold_ms=stale_threshold_ms,
                 timings_ms=timings_ms,
             )
+
+            if visualization_writer is not None:
+                depth_map = depth_decoded.get("depth_map")
+                if not isinstance(depth_map, np.ndarray):
+                    depth_map = None
+                visualization_writer.submit(
+                    trace_id=packet.trace_id,
+                    inference_ts_ms=inference_ts_ms,
+                    frame_bgr=packet.frame,
+                    yolo_objects=yolo_decoded.get("objects", []),
+                    depth_map=depth_map,
+                )
+
             logger.log("inference_done", metadata)
             if data_channel is not None and data_channel.readyState == "open":
                 data_channel.send(orjson.dumps(metadata).decode("utf-8"))
@@ -321,6 +361,8 @@ async def run_edge(config: dict[str, Any], clean_log: bool = True) -> None:
 
     await pc.close()
     await signaling.close()
+    if visualization_writer is not None:
+        visualization_writer.close()
 
 
 def main() -> None:
