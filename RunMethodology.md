@@ -318,6 +318,42 @@ You should see inference metadata arriving with `age_ms` values. Run the latency
 python tools/analyze_metrics.py --input logs/jetson_session.jsonl --thresholds configs/acceptance.thresholds.yaml
 ```
 
+### Optional — Enable visualization dump and review artifacts
+
+To save per-frame artifacts (`.npz`) for offline review, enable the edge gateway dump settings:
+
+- Local run: edit `configs/edge_gateway.self_hosted.yaml`
+- Vast.ai Docker run: edit `configs/edge_gateway.vast_ai.yaml`
+
+Set:
+
+```yaml
+runtime:
+  visualization_dump_enabled: true
+  visualization_dump_dir: logs/visualization_artifacts
+  visualization_dump_queue: 8
+```
+
+Notes:
+
+- Artifacts are keyed by `trace_id` and written as `{trace_id}.npz`.
+- The artifact directory is cleaned at startup, so each run gets a fresh set.
+- Keep this off when benchmarking pure latency to avoid extra I/O overhead.
+
+After a session, replay YOLO masks + depth map interactively:
+
+```bash
+python tools/visualize_session_replay.py \
+  --edge-input logs/edge_session.jsonl \
+  --artifact-dir logs/visualization_artifacts
+```
+
+Replay controls:
+
+- any key: next frame
+- `q` or `Esc`: quit
+- adjust near/far depth thresholds live in the Controls window
+
 For phase-1 validation, inspect fused payloads and verify both model statuses per frame:
 
 ```bash
