@@ -102,6 +102,8 @@ class InferenceConfig:
     output_names: list[str]
     input_width: int = 640
     input_height: int = 640
+    normalize_input: bool = False
+    bgr_to_rgb: bool = False
 
 
 class TritonModelClient:
@@ -122,8 +124,11 @@ class TritonModelClient:
             )
             image_bgr = frame.to_ndarray(format="bgr24")
 
+        if self._cfg.bgr_to_rgb:
+            image_bgr = image_bgr[:, :, ::-1]
         img = image_bgr.astype(np.float32)
-        # NHWC->NCHW and batch=1 for expected Triton input layout.
+        if self._cfg.normalize_input:
+            img = img / 255.0
         img = np.transpose(img, (2, 0, 1))[None, ...]
         return img
 

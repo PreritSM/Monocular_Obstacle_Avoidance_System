@@ -14,6 +14,8 @@ yolo_inference:
   output_names: ["output0", "output1"]
   input_width: 640
   input_height: 640
+  normalize_input: true
+  bgr_to_rgb: true
 depth_inference:
   triton_url: 127.0.0.1:8001
   model_name: depth_anything_v2_small

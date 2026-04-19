@@ -3,7 +3,8 @@
 -r services/signaling_self_hosted/requirements.txt
 -r tools/requirements.txt
 
-# Build-time calibration dependencies used by scripts/build_triton_engine.sh
+# onnxruntime: depth dynamic quantization (build_triton_engine.sh, always required)
+# ultralytics + opencv-python: optional YOLO INT8 calibration (scripts/yolo_calibrate.py, ENABLE_YOLO_CALIBRATION=1 only)
 onnxruntime==1.24.4
 ultralytics==8.4.36
 opencv-python==4.11.0.86
