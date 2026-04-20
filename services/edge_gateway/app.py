@@ -180,6 +180,64 @@ async def run_edge(config: dict[str, Any], clean_log: bool = True) -> None:
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         return result, elapsed_ms
 
+    def _decode_and_fuse(
+        yolo_result: dict,
+        depth_result_raw: dict | None,
+        frame_height: int,
+        frame_width: int,
+    ) -> tuple:
+        t0 = time.perf_counter()
+        yolo_decoded = decode_yolo_segmentation(
+            yolo_result,
+            input_width=yolo_cfg.input_width,
+            input_height=yolo_cfg.input_height,
+            score_threshold=yolo_score_threshold,
+            mask_threshold=yolo_mask_threshold,
+            max_objects=max_objects_per_frame,
+            class_names=yolo_class_names,
+        )
+        yolo_decode_ms = (time.perf_counter() - t0) * 1000.0
+
+        if depth_result_raw is not None:
+            t1 = time.perf_counter()
+            depth_decoded = decode_depth_output(depth_result_raw, output_name=depth_output_name)
+            depth_decode_ms = (time.perf_counter() - t1) * 1000.0
+        else:
+            depth_decoded = {"status": "disabled"}
+            depth_decode_ms = 0.0
+
+        t2 = time.perf_counter()
+        if depth_decoded.get("status") == "ok":
+            overlap = compute_object_depth_overlap(
+                yolo_decoded=yolo_decoded,
+                depth_decoded=depth_decoded,
+                frame_height=frame_height,
+                frame_width=frame_width,
+                yolo_input_width=yolo_cfg.input_width,
+                yolo_input_height=yolo_cfg.input_height,
+                near_threshold=depth_near_threshold,
+                far_threshold=depth_far_threshold,
+            )
+            depth_payload = {
+                "status": "ok",
+                "output_name": depth_decoded.get("output_name"),
+                "output_shape": depth_decoded.get("output_shape"),
+                "depth_percentiles": depth_decoded.get("depth_percentiles", {}),
+            }
+        else:
+            overlap = {
+                "status": "disabled",
+                "object_count": 0,
+                "objects": [],
+            }
+            depth_payload = {
+                "status": depth_decoded.get("status", "inference_error"),
+                "error": depth_decoded.get("error", "depth_not_available"),
+            }
+        overlap_ms = (time.perf_counter() - t2) * 1000.0
+
+        return yolo_decoded, depth_decoded, depth_payload, overlap, yolo_decode_ms, depth_decode_ms, overlap_ms
+
     async def inference_loop() -> None:
         while True:
             packet = await queue.get()
@@ -193,63 +251,26 @@ async def run_edge(config: dict[str, Any], clean_log: bool = True) -> None:
                     yolo_task,
                     depth_task,
                 )
-                depth_decode_start = time.perf_counter()
-                depth_decoded = decode_depth_output(
-                    depth_result_raw,
-                    output_name=depth_output_name,
-                )
-                depth_decode_ms = (time.perf_counter() - depth_decode_start) * 1000.0
             else:
                 yolo_result, yolo_inference_ms = await yolo_task
+                depth_result_raw = None
                 depth_inference_ms = None
-                depth_decode_ms = 0.0
-                depth_decoded = {
-                    "status": "disabled",
-                }
 
-            yolo_decode_start = time.perf_counter()
-
-            yolo_decoded = decode_yolo_segmentation(
+            (
+                yolo_decoded,
+                depth_decoded,
+                depth_payload,
+                overlap,
+                yolo_decode_ms,
+                depth_decode_ms,
+                overlap_ms,
+            ) = await asyncio.to_thread(
+                _decode_and_fuse,
                 yolo_result,
-                input_width=yolo_cfg.input_width,
-                input_height=yolo_cfg.input_height,
-                score_threshold=yolo_score_threshold,
-                mask_threshold=yolo_mask_threshold,
-                max_objects=max_objects_per_frame,
-                class_names=yolo_class_names,
+                depth_result_raw,
+                packet.frame.shape[0],
+                packet.frame.shape[1],
             )
-            yolo_decode_ms = (time.perf_counter() - yolo_decode_start) * 1000.0
-
-            overlap_start = time.perf_counter()
-
-            if depth_decoded.get("status") == "ok":
-                overlap = compute_object_depth_overlap(
-                    yolo_decoded=yolo_decoded,
-                    depth_decoded=depth_decoded,
-                    frame_height=packet.frame.shape[0],
-                    frame_width=packet.frame.shape[1],
-                    yolo_input_width=yolo_cfg.input_width,
-                    yolo_input_height=yolo_cfg.input_height,
-                    near_threshold=depth_near_threshold,
-                    far_threshold=depth_far_threshold,
-                )
-                depth_payload = {
-                    "status": "ok",
-                    "output_name": depth_decoded.get("output_name"),
-                    "output_shape": depth_decoded.get("output_shape"),
-                    "depth_percentiles": depth_decoded.get("depth_percentiles", {}),
-                }
-            else:
-                overlap = {
-                    "status": "disabled",
-                    "object_count": 0,
-                    "objects": [],
-                }
-                depth_payload = {
-                    "status": depth_decoded.get("status", "inference_error"),
-                    "error": depth_decoded.get("error", "depth_not_available"),
-                }
-            overlap_ms = (time.perf_counter() - overlap_start) * 1000.0
 
             yolo_objects_compact: list[dict[str, Any]] = []
             for obj in yolo_decoded.get("objects", []):
