@@ -12,8 +12,8 @@ yolo_inference:
   model_version: "1"
   input_name: images
   output_names: ["output0", "output1"]
-  input_width: 640
-  input_height: 640
+  input_width: 512
+  input_height: 512
   normalize_input: true
   bgr_to_rgb: true
 depth_inference:

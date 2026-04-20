@@ -12,8 +12,8 @@ yolo_inference:
   model_version: "1"
   input_name: images
   output_names: ["output0", "output1"]
-  input_width: 640
-  input_height: 640
+  input_width: 512
+  input_height: 512
   normalize_input: true
   bgr_to_rgb: true
 depth_inference:
@@ -33,6 +33,6 @@ runtime:
   max_objects_per_frame: 10
   depth_near_threshold: 0.35
   depth_far_threshold: 0.65
-  visualization_dump_enabled: True
+  visualization_dump_enabled: False
   visualization_dump_dir: logs/visualization_artifacts
   visualization_dump_queue: 8

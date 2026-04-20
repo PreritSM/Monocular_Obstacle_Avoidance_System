@@ -36,8 +36,8 @@ pip install -r requirements-dev.txt
 # Download model artifacts for both YOLO and Depth
 bash scripts/download_model.sh
 
-# Export YOLO PyTorch model to ONNX
-python -c "from ultralytics import YOLO; model = YOLO('models/yolo26n-seg.pt'); model.export(format='onnx')"
+# Export YOLO PyTorch model to ONNX at 512×512 (reduced from 640 for lower inference latency)
+python -c "from ultralytics import YOLO; model = YOLO('models/yolo26n-seg.pt'); model.export(format='onnx', imgsz=512)"
 
 # Build TensorRT engine (FP16 by default) and quantize Depth ONNX
 bash scripts/build_triton_engine.sh
@@ -198,8 +198,8 @@ Same as the Vast.ai flow — YOLO engine must be built on the local GPU:
 ```bash
 bash scripts/download_model.sh    # saves YOLO + depth source artifacts in models/
 
-# Export YOLO PyTorch model to ONNX (required before TensorRT conversion)
-python -c "from ultralytics import YOLO; model = YOLO('models/yolo26n-seg.pt'); model.export(format='onnx')"
+# Export YOLO PyTorch model to ONNX at 512×512 (required before TensorRT conversion)
+python -c "from ultralytics import YOLO; model = YOLO('models/yolo26n-seg.pt'); model.export(format='onnx', imgsz=512)"
 
 bash scripts/build_triton_engine.sh
 bash scripts/prepare_triton_repo.sh
