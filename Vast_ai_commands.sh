@@ -32,20 +32,15 @@ uv venv --python "${PYTHON_VERSION}" "${VENV_DIR}"
 VENV_PY="${PWD}/${VENV_DIR}/bin/python"
 VENV_PIP="${PWD}/${VENV_DIR}/bin/pip"
 
-if [[ ! -x "${VENV_PY}" || ! -x "${VENV_PIP}" ]]; then
-  log "ERROR: virtual environment binaries not found in ${VENV_DIR}/bin"
+if [[ ! -x "${VENV_PY}" ]]; then
+  log "ERROR: virtual environment python not found in ${VENV_DIR}/bin"
   exit 1
 fi
 
 ACTIVE_PY="$("${VENV_PY}" -c 'import sys; print(sys.executable)')"
-ACTIVE_PIP="$("${VENV_PIP}" --version | awk '{print $4}')"
 ACTIVE_VER="$("${VENV_PY}" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 if [[ "${ACTIVE_PY}" != "${VENV_PY}" ]]; then
   log "ERROR: Python is not using repo venv. Expected ${VENV_PY}, got ${ACTIVE_PY}"
-  exit 1
-fi
-if [[ "${ACTIVE_PIP}" != "${VENV_PY}" ]]; then
-  log "ERROR: Pip is not using repo venv. Expected ${VENV_PY}, got ${ACTIVE_PIP}"
   exit 1
 fi
 if [[ "${ACTIVE_VER}" != "${PYTHON_VERSION}" ]]; then
@@ -53,12 +48,25 @@ if [[ "${ACTIVE_VER}" != "${PYTHON_VERSION}" ]]; then
   exit 1
 fi
 
+log "Ensuring pip is present in the venv"
+"${VENV_PY}" -m ensurepip --upgrade
+
+if [[ ! -x "${VENV_PIP}" ]]; then
+  log "ERROR: pip not found in ${VENV_DIR}/bin after ensurepip"
+  exit 1
+fi
+
+ACTIVE_PIP="$("${VENV_PIP}" --version | awk '{print $4}')"
+if [[ "${ACTIVE_PIP}" != "${VENV_PY}" ]]; then
+  log "ERROR: Pip is not using repo venv. Expected ${VENV_PY}, got ${ACTIVE_PIP}"
+  exit 1
+fi
+
 log "Using venv python: ${ACTIVE_PY}"
 log "Using venv pip: ${ACTIVE_PIP}"
 log "Using venv python version: ${ACTIVE_VER}"
 
-log "Ensuring pip is present and up to date"
-"${VENV_PY}" -m ensurepip --upgrade
+log "Upgrading pip in venv"
 "${VENV_PY}" -m pip install --upgrade pip
 
 log "Installing dev requirements"
