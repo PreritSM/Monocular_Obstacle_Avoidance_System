@@ -9,19 +9,8 @@ VENV_DIR="${VENV_DIR:-.venv}"
 FOLLOW_LOGS="${FOLLOW_LOGS:-0}"
 
 log() {
-  echo "[vast-setup] $*"
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
 }
-
-if [[ ! -d "${REPO_DIR}/.git" ]]; then
-  log "Cloning repository into ${REPO_DIR}"
-  git clone "${REPO_URL}" "${REPO_DIR}"
-fi
-
-cd "${REPO_DIR}"
-
-log "Checking out branch ${BRANCH}"
-git fetch --all --prune
-git checkout "${BRANCH}"
 
 if ! command -v uv >/dev/null 2>&1; then
   log "Installing uv"
