@@ -57,6 +57,7 @@ Acceptance thresholds are codified in `configs/acceptance.thresholds.yaml` and e
 
 1. Start the host-networked stack on the rented GPU VM:
    - `docker compose -f deploy/docker/docker-compose.yml up -d --build`
+   - Requires Docker with the NVIDIA Container Toolkit enabled so `--gpus all` works.
 2. Ensure the Vast.ai instance exposes the WebRTC and signaling ports you expect the client to reach.
 3. Keep the TensorRT model repository mounted read-only so cold starts only pay container startup, not model export time.
 4. Use the self-hosted configs in `configs/edge_gateway.vast_ai.yaml` and `configs/jetson.self_hosted.yaml` unless you need a different signaling endpoint.

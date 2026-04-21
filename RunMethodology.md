@@ -14,6 +14,7 @@ The system has two sides:
 - Pick any instance with an NVIDIA GPU and Docker + NVIDIA drivers pre-installed
 - Expose these TCP ports in Vast.ai instance settings: `8765` (signaling), `8001` (Triton gRPC), `8000` (Triton HTTP, optional health checks)
 - Note the public IP — you'll need it for the Jetson config
+- If Vast.ai only shows SSH or a UDP port in the port list, add TCP `8765` explicitly. `22/tcp` alone is not enough for the Jetson client to reach signaling.
 
 ### Step 2 — SSH into the VM and clone the repo
 ```bash
@@ -21,11 +22,15 @@ git clone https://github.com/PreritSM/Monocular_Obstacle_Avoidance_System.git
 cd Monocular_Obstacle_Avoidance_System
 ```
 
+The code path here still uses the `self_hosted` signaling implementation name, even when the inference stack is running on a remote Vast.ai VM.
+
 ### Step 3 — Build model artifacts for Triton (YOLO + Depth)
 
 You now need two models in Triton:
 - YOLO segmentation (TensorRT plan)
 - Depth Anything V2 Small (ONNX)
+
+This build step requires Docker to be able to start NVIDIA GPU containers. If `docker run --gpus all ...` fails, install/configure the NVIDIA Container Toolkit on the host and restart Docker before rerunning the build.
 
 YOLO must be converted to a TensorRT `.plan` file **on the same GPU** it will run on:
 
@@ -103,8 +108,8 @@ Expected:
 
 ### Step 1 — Clone the repo and install dependencies
 ```bash
-git clone <your-repo-url>
-cd Depth_Yolo_AWS
+git clone https://github.com/PreritSM/Monocular_Obstacle_Avoidance_System.git
+cd Monocular_Obstacle_Avoidance_System
 
 python -m venv .venv
 source .venv/bin/activate
@@ -113,12 +118,14 @@ pip install -r jetson_client/requirements.txt
 
 ### Step 2 — Edit the Jetson config to point at your Vast.ai VM
 
-Open `configs/jetson.self_hosted.yaml` and update `signaling_url` with the Vast.ai public IP:
+Open `configs/jetson_remote.yaml` and update `signaling_url` with the Vast.ai public IP:
 
 ```yaml
 webrtc:
   signaling_url: ws://<VAST_AI_PUBLIC_IP>:8765/ws   # <-- change this
 ```
+
+If you are using an SSH tunnel instead of exposing `8765` publicly, keep `signaling_url` on `ws://127.0.0.1:8765/ws` and make sure the tunnel is running.
 
 If direct public access to port `8765` is blocked, use an SSH tunnel instead and keep `signaling_url` on localhost:
 

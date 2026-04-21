@@ -6,7 +6,7 @@ input [
   {
     name: "images"
     data_type: TYPE_FP32
-    dims: [3, 640, 640]
+    dims: [3, 512, 512]
   }
 ]
 
@@ -19,7 +19,7 @@ output [
   {
     name: "output1"
     data_type: TYPE_FP32
-    dims: [32, 160, 160]
+    dims: [32, 128, 128]
   }
 ]
 

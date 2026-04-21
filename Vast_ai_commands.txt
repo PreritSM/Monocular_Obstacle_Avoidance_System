@@ -1,5 +1,28 @@
+
+
 git clone https://github.com/PreritSM/Monocular_Obstacle_Avoidance_System.git
 cd Monocular_Obstacle_Avoidance_System
+
+git checkout vast-ai-multithread
+
+
+pip install uv
+uv venv --python 3.12
+source venv/bin/activate
+
+# check which python is used using 
+which python # if it matches your environment path then we are good
+# Now we check which pip will be used using
+which pip # if it matches good, if we get an error or different path
+# download using
+python -m enrurepip --default-pip
+# To download anything inside the env we are using we run the below command
+python -m pip install -r requirements-dev.txt
+
+sudo apt-get update
+sudo apt-get install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
 
 pip install -r requirements-dev.txt
 
@@ -7,7 +30,7 @@ bash scripts/download_model.sh
 
 python -c "from ultralytics import YOLO; model = YOLO('models/yolo26n-seg.pt'); model.export(format='onnx', imgsz=512)"
 
-bash scripts/build_triton_engine.sh
+bash scripts/build_triton_engine.sh 
 
 bash scripts/prepare_triton_repo.sh
 

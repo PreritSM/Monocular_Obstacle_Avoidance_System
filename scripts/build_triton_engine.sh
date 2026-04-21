@@ -44,6 +44,36 @@ if [[ "${TRT_PRECISION}" == "fp16" ]]; then
   TRT_FLAGS="--fp16"
 fi
 
+DOCKER_GPU_ARGS=(--gpus all)
+DOCKER_GPU_ENV=()
+
+if ! docker info >/dev/null 2>&1; then
+  echo "Docker is not reachable from this environment."
+  echo "Start Docker on the Vast.ai host or run this on a machine with Docker access."
+  exit 1
+fi
+
+if ! docker info 2>/dev/null | grep -Eq 'Runtimes:.*nvidia|nvidia'; then
+  echo "Docker GPU support is not enabled on this host."
+  echo "This build step needs NVIDIA container runtime support so trtexec can access the GPU."
+  echo ""
+  echo "Fix options:"
+  echo "  1. Use a Vast.ai instance/image with NVIDIA Container Toolkit already installed."
+  echo "  2. Install and configure the toolkit on the host, then restart Docker."
+  echo "  3. If you already have a GPU-ready container runtime, verify that 'docker run --gpus all ...' works before rerunning this script."
+  echo ""
+  echo "Common verification commands:"
+  echo "  docker info | grep -i runtimes"
+  echo "  nvidia-smi"
+  exit 1
+fi
+
+if ! docker run --rm --gpus all --pull=never nvidia/cuda:12.4.1-base-ubuntu22.04 true >/dev/null 2>&1; then
+  echo "Docker's --gpus path is not working on this host; falling back to --runtime=nvidia."
+  DOCKER_GPU_ARGS=(--runtime=nvidia)
+  DOCKER_GPU_ENV=(-e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=compute,utility)
+fi
+
 mkdir -p "${YOLO_TARGET_ENGINE_DIR}" "${DEPTH_TARGET_ENGINE_DIR}"
 
 # --- YOLO TensorRT engine ---
@@ -68,7 +98,7 @@ if [[ "${ENABLE_YOLO_CALIBRATION}" == "1" ]]; then
 fi
 
 echo "Building YOLO TensorRT engine (${TRT_PRECISION})..."
-docker run --rm --gpus all --network host \
+docker run --rm "${DOCKER_GPU_ARGS[@]}" --network host "${DOCKER_GPU_ENV[@]}" \
   -v "${YOLO_ENGINE_INPUT}:/workspace/yolo.onnx:ro" \
   -v "${TRITON_REPO}:/models" \
   --shm-size=1g \

@@ -10,6 +10,7 @@ import av
 import numpy as np
 import orjson
 from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc.mediastreams import MediaStreamError
 from aiortc.rtcconfiguration import RTCConfiguration, RTCIceServer
 from aiortc.sdp import candidate_from_sdp
 
@@ -132,7 +133,19 @@ async def run_edge(config: dict[str, Any], clean_log: bool = True) -> None:
 
         async def consume_video() -> None:
             while True:
-                frame: av.VideoFrame = await track.recv()
+                try:
+                    frame = await track.recv()
+                except MediaStreamError:
+                    logger.log("track_ended", {"kind": track.kind})
+                    break
+                except Exception as exc:
+                    logger.log("track_recv_error", {"kind": track.kind, "error": str(exc)})
+                    await asyncio.sleep(0.05)
+                    continue
+
+                if not isinstance(frame, av.VideoFrame):
+                    logger.log("frame_rx_skipped", {"reason": "invalid_frame", "kind": track.kind})
+                    continue
 
                 # The aiortc decoder thread pushes every decoded frame into an
                 # unbounded asyncio.Queue on the track. If the event loop was
@@ -144,7 +157,9 @@ async def run_edge(config: dict[str, Any], clean_log: bool = True) -> None:
                 if _internal_q is not None:
                     while not _internal_q.empty():
                         try:
-                            frame = _internal_q.get_nowait()
+                            maybe_frame = _internal_q.get_nowait()
+                            if isinstance(maybe_frame, av.VideoFrame):
+                                frame = maybe_frame
                         except Exception:
                             break
 
