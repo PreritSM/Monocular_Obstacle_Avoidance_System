@@ -1,0 +1,20 @@
+git clone https://github.com/PreritSM/Monocular_Obstacle_Avoidance_System.git
+cd Monocular_Obstacle_Avoidance_System
+
+pip install -r requirements-dev.txt
+
+bash scripts/download_model.sh
+
+python -c "from ultralytics import YOLO; model = YOLO('models/yolo26n-seg.pt'); model.export(format='onnx', imgsz=512)"
+
+bash scripts/build_triton_engine.sh
+
+bash scripts/prepare_triton_repo.sh
+
+cd deploy/docker
+docker compose up --build
+
+docker compose ps
+docker compose logs -f triton 
+
+docker compose logs -f edge_gateway 
