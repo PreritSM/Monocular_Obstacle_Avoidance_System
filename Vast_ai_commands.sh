@@ -7,6 +7,7 @@ BRANCH="${BRANCH:-vast-ai-multithread}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 VENV_DIR="${VENV_DIR:-.venv}"
 FOLLOW_LOGS="${FOLLOW_LOGS:-0}"
+TRITON_IMAGE="${TRITON_IMAGE:-nvcr.io/nvidia/tritonserver:25.03-py3}"
 
 log() {
   echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
@@ -25,6 +26,8 @@ fi
 
 log "Ensuring Python ${PYTHON_VERSION} is available via uv"
 uv python install "${PYTHON_VERSION}"
+
+log "Using Triton image: ${TRITON_IMAGE}"
 
 if [[ -d "${VENV_DIR}" ]]; then
   log "Removing existing ${VENV_DIR} to recreate with Python ${PYTHON_VERSION}"
@@ -99,14 +102,14 @@ log "Exporting YOLO ONNX at 512x512"
 "${VENV_PY}" -c "from ultralytics import YOLO; model = YOLO('models/yolo26n-seg.pt'); model.export(format='onnx', imgsz=512)"
 
 log "Building Triton engine and quantized depth model"
-PYTHON_BIN="${VENV_PY}" bash scripts/build_triton_engine.sh
+TRITON_IMAGE="${TRITON_IMAGE}" PYTHON_BIN="${VENV_PY}" bash scripts/build_triton_engine.sh
 
 log "Verifying Triton model repository"
 bash scripts/prepare_triton_repo.sh
 
 log "Building and starting Docker services"
 pushd deploy/docker >/dev/null
-docker compose up -d --build
+TRITON_IMAGE="${TRITON_IMAGE}" docker compose up -d --build
 
 log "Compose status"
 docker compose ps

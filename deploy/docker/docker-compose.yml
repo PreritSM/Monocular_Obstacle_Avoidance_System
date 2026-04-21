@@ -10,7 +10,7 @@ services:
     command: ["python3", "-m", "services.signaling_self_hosted.server"]
 
   triton:
-    image: nvcr.io/nvidia/tritonserver:24.08-py3
+    image: ${TRITON_IMAGE:-nvcr.io/nvidia/tritonserver:25.03-py3}
     network_mode: host
     restart: unless-stopped
     gpus: all

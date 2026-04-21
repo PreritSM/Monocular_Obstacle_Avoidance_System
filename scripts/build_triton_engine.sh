@@ -10,6 +10,7 @@ TRITON_REPO="${ROOT_DIR}/triton/model_repository"
 YOLO_TARGET_ENGINE_DIR="${TRITON_REPO}/yolo26n_seg/1"
 DEPTH_TARGET_ENGINE_DIR="${TRITON_REPO}/depth_anything_v2_small/1"
 TRT_PRECISION="${TRT_PRECISION:-fp16}"
+TRITON_IMAGE="${TRITON_IMAGE:-nvcr.io/nvidia/tritonserver:25.03-py3}"
 PYTHON_BIN="${PYTHON_BIN:-${ROOT_DIR}/.venv/bin/python}"
 ENABLE_YOLO_CALIBRATION="${ENABLE_YOLO_CALIBRATION:-0}"
 YOLO_CALIB_DATA="${YOLO_CALIB_DATA:-coco8.yaml}"
@@ -102,7 +103,7 @@ docker run --rm "${DOCKER_GPU_ARGS[@]}" --network host "${DOCKER_GPU_ENV[@]}" \
   -v "${YOLO_ENGINE_INPUT}:/workspace/yolo.onnx:ro" \
   -v "${TRITON_REPO}:/models" \
   --shm-size=1g \
-  nvcr.io/nvidia/tritonserver:24.08-py3 \
+  "${TRITON_IMAGE}" \
   /usr/src/tensorrt/bin/trtexec --onnx=/workspace/yolo.onnx --saveEngine=/models/yolo26n_seg/1/model.plan ${TRT_FLAGS}
 
 # --- Depth dynamic quantization (unchanged) ---
