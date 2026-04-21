@@ -26,11 +26,16 @@ fi
 log "Ensuring Python ${PYTHON_VERSION} is available via uv"
 uv python install "${PYTHON_VERSION}"
 
+if [[ -d "${VENV_DIR}" ]]; then
+  log "Removing existing ${VENV_DIR} to recreate with Python ${PYTHON_VERSION}"
+  rm -rf "${VENV_DIR}"
+fi
+
 log "Creating/updating repo-local venv at ${VENV_DIR} using uv + Python ${PYTHON_VERSION}"
 uv venv --python "${PYTHON_VERSION}" "${VENV_DIR}"
 
-VENV_PY="${PWD}/${VENV_DIR}/bin/python"
-VENV_PIP="${PWD}/${VENV_DIR}/bin/pip"
+VENV_ROOT="${PWD}/${VENV_DIR}"
+VENV_PY="${VENV_ROOT}/bin/python"
 
 if [[ ! -x "${VENV_PY}" ]]; then
   log "ERROR: virtual environment python not found in ${VENV_DIR}/bin"
@@ -38,9 +43,10 @@ if [[ ! -x "${VENV_PY}" ]]; then
 fi
 
 ACTIVE_PY="$("${VENV_PY}" -c 'import sys; print(sys.executable)')"
+ACTIVE_PREFIX="$("${VENV_PY}" -c 'import sys; print(sys.prefix)')"
 ACTIVE_VER="$("${VENV_PY}" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-if [[ "${ACTIVE_PY}" != "${VENV_PY}" ]]; then
-  log "ERROR: Python is not using repo venv. Expected ${VENV_PY}, got ${ACTIVE_PY}"
+if [[ "${ACTIVE_PREFIX}" != "${VENV_ROOT}" ]]; then
+  log "ERROR: Python is not using repo venv. Expected prefix ${VENV_ROOT}, got ${ACTIVE_PREFIX}"
   exit 1
 fi
 if [[ "${ACTIVE_VER}" != "${PYTHON_VERSION}" ]]; then
@@ -51,14 +57,14 @@ fi
 log "Ensuring pip is present in the venv"
 "${VENV_PY}" -m ensurepip --upgrade
 
-if [[ ! -x "${VENV_PIP}" ]]; then
-  log "ERROR: pip not found in ${VENV_DIR}/bin after ensurepip"
+if ! "${VENV_PY}" -m pip --version >/dev/null 2>&1; then
+  log "ERROR: pip module is not available in venv after ensurepip"
   exit 1
 fi
 
-ACTIVE_PIP="$("${VENV_PIP}" --version | awk '{print $4}')"
-if [[ "${ACTIVE_PIP}" != "${VENV_PY}" ]]; then
-  log "ERROR: Pip is not using repo venv. Expected ${VENV_PY}, got ${ACTIVE_PIP}"
+ACTIVE_PIP="$("${VENV_PY}" -m pip --version | awk '{print $4}')"
+if [[ "${ACTIVE_PIP}" != "${VENV_ROOT}"/* ]]; then
+  log "ERROR: Pip is not using repo venv. Expected path under ${VENV_ROOT}, got ${ACTIVE_PIP}"
   exit 1
 fi
 
