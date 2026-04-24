@@ -16,6 +16,7 @@ class OpenCVCameraAdapter(CameraAdapter):
 
     def start(self) -> None:
         self._cap = cv2.VideoCapture(self._device_index)
+        self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
         self._cap.set(cv2.CAP_PROP_FPS, self._fps)

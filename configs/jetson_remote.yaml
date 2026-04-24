@@ -3,8 +3,8 @@ log_file: logs/jetson_session.jsonl
 camera:
   adapter: opencv
   device_index: 0
-  width: 640
-  height: 480
+  width: 512
+  height: 512
   fps: 1
 webrtc:
   room_id: phase1-room
