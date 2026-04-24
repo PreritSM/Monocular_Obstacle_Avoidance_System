@@ -6,15 +6,20 @@ input [
   {
     name: "images"
     data_type: TYPE_FP32
-    dims: [3, 480, 640]
+    dims: [3, 512, 512]
   }
 ]
 
 output [
   {
-    name: "detections"
+    name: "output0"
     data_type: TYPE_FP32
-    dims: [-1, 7]
+    dims: [300, 38]
+  },
+  {
+    name: "output1"
+    data_type: TYPE_FP32
+    dims: [32, 128, 128]
   }
 ]
 

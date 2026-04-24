@@ -18,8 +18,18 @@ venv/
 logs/
 artifacts/
 benchmarks/output/
+.think_logs/
 
 # OS/editor
 .DS_Store
 .vscode/
 .idea/
+logs/
+*.log
+*.bak
+*.tmp
+*.swp
+*.swo
+triton/
+models/
+datasets/

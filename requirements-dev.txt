@@ -2,6 +2,14 @@
 -r services/edge_gateway/requirements.txt
 -r services/signaling_self_hosted/requirements.txt
 -r tools/requirements.txt
+
+# onnxruntime: depth dynamic quantization (build_triton_engine.sh, always required)
+# ultralytics + opencv-python: optional YOLO INT8 calibration (scripts/yolo_calibrate.py, ENABLE_YOLO_CALIBRATION=1 only)
+onnxruntime
+onnxruntime-gpu
+ultralytics==8.4.36
+opencv-python==4.11.0.86
+
 pytest==8.3.5
 ruff==0.11.2
 pyyaml==6.0.2
