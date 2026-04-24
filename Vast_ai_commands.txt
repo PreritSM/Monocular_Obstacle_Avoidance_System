@@ -46,6 +46,20 @@ ssh -N \
   -L 8765:127.0.0.1:8765 \
   -L 8000:127.0.0.1:8000 \
   -L 8001:127.0.0.1:8001 \
-  root@184.144.255.168 -p 57361
+  root@184.144.255.168 -p 15996
 
 python -m jetson_client.app --config configs/jetson_remote.yaml
+
+##Copy Model visualization artifacts :-
+
+rsync -avz -e "ssh -p 15996" \
+  root@184.144.255.168:/root/Monocular_Obstacle_Avoidance_System/logs/visualization_artifacts/ \
+  ./logs/visualization_artifacts/
+
+rsync -avz -e "ssh -p 15996" \
+  root@184.144.255.168:/root/Monocular_Obstacle_Avoidance_System/logs/edge_session.jsonl \
+  ./logs/edge_session.jsonl
+
+
+
+
