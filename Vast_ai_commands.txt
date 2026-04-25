@@ -46,7 +46,7 @@ ssh -N \
   -L 8765:127.0.0.1:8765 \
   -L 8000:127.0.0.1:8000 \
   -L 8001:127.0.0.1:8001 \
-  root@74.15.83.230 -p 45559
+  root@74.15.83.230 -p 45690
 
 python -m jetson_client.app --config configs/jetson_remote.yaml
 

@@ -14,15 +14,41 @@ class OpenCVCameraAdapter(CameraAdapter):
         self._fps = fps
         self._cap: cv2.VideoCapture | None = None
 
+    def _open_camera(self, device_index: int) -> cv2.VideoCapture | None:
+        cap = cv2.VideoCapture(device_index)
+        if not cap.isOpened():
+            cap.release()
+            return None
+
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
+        cap.set(cv2.CAP_PROP_FPS, self._fps)
+
+        ok, _ = cap.read()
+        if not ok:
+            cap.release()
+            return None
+
+        return cap
+
     def start(self) -> None:
-        # self._cap = cv2.VideoCapture(self._device_index, cv2.CAP_V4L2)
-        # if not self._cap.isOpened():
-        #     raise RuntimeError(f"Unable to open camera device index {self._device_index} via V4L2")
-        self._cap = cv2.VideoCapture(self._device_index)
-        self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
-        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
-        self._cap.set(cv2.CAP_PROP_FPS, self._fps)
+        cap = self._open_camera(self._device_index)
+        if cap is None:
+            for idx in range(8):
+                if idx == self._device_index:
+                    continue
+                cap = self._open_camera(idx)
+                if cap is not None:
+                    self._device_index = idx
+                    break
+
+        if cap is None:
+            raise RuntimeError(
+                f"Unable to open any camera device (requested index {self._device_index}, tried 0-7)"
+            )
+
+        self._cap = cap
 
     def read(self) -> tuple[bool, np.ndarray]:
         if self._cap is None:
