@@ -15,9 +15,10 @@ class OpenCVCameraAdapter(CameraAdapter):
         self._cap: cv2.VideoCapture | None = None
 
     def start(self) -> None:
-        self._cap = cv2.VideoCapture(self._device_index, cv2.CAP_V4L2)
-        if not self._cap.isOpened():
-            raise RuntimeError(f"Unable to open camera device index {self._device_index} via V4L2")
+        # self._cap = cv2.VideoCapture(self._device_index, cv2.CAP_V4L2)
+        # if not self._cap.isOpened():
+        #     raise RuntimeError(f"Unable to open camera device index {self._device_index} via V4L2")
+        self._cap = cv2.VideoCapture(self._device_index)
         self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
