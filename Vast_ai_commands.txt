@@ -46,7 +46,7 @@ ssh -N \
   -L 8765:127.0.0.1:8765 \
   -L 8000:127.0.0.1:8000 \
   -L 8001:127.0.0.1:8001 \
-  root@184.144.255.168 -p 15996
+  root@74.15.83.230 -p 45559
 
 python -m jetson_client.app --config configs/jetson_remote.yaml
 
@@ -63,3 +63,29 @@ rsync -avz -e "ssh -p 15996" \
 
 
 
+# Local script to get pipeline time
+import json, statistics
+from pathlib import Path
+path = Path('logs/jetson_session.jsonl')
+rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+lat = []
+for row in rows:
+    if row.get('event') != 'metadata_rx':
+        continue
+    msg = row.get('message')
+    if not isinstance(msg, str):
+        continue
+    payload = json.loads(msg)
+    lat.append(payload)
+for key in ['age_ms','timings_ms.capture_to_edge_rx_ms','timings_ms.edge_rx_to_inference_done_ms','timings_ms.yolo.inference_ms','timings_ms.depth.inference_ms','timings_ms.yolo.decode_ms','timings_ms.depth.decode_ms','timings_ms.fusion_ms']:
+    vals=[]
+    for p in lat:
+        cur=p
+        for part in key.split('.'):
+            if not isinstance(cur, dict):
+                cur=None; break
+            cur=cur.get(part)
+        if isinstance(cur,(int,float)):
+            vals.append(float(cur))
+    if vals:
+        print(f'{key}: median={statistics.median(vals):.2f} p95={sorted(vals)[int((len(vals)-1)*0.95)]:.2f} n={len(vals)}') 

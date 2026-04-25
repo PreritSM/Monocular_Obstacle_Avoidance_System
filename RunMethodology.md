@@ -248,7 +248,7 @@ docker run --rm --gpus all --network host \
   -v $(pwd)/models:/workspace/models:ro \
   -v $(pwd)/triton/model_repository:/models \
   --shm-size=1g \
-  nvcr.io/nvidia/tritonserver:24.08-py3 \
+  nvcr.io/nvidia/tritonserver:25.03-py3 \
   /usr/src/tensorrt/bin/trtexec --onnx=/workspace/models/yolo26n-seg.onnx --saveEngine=/models/yolo26n_seg/1/model.plan --fp16
 ``` -->
 
@@ -260,7 +260,7 @@ Then start Triton itself:
 docker run --rm --gpus all --network host \
   -v $(pwd)/triton/model_repository:/models:ro \
   --shm-size=1g \
-  nvcr.io/nvidia/tritonserver:24.08-py3 \
+  nvcr.io/nvidia/tritonserver:25.03-py3 \
   tritonserver --model-repository=/models --strict-model-config=false --exit-on-error=false --log-verbose=0
 ```
 

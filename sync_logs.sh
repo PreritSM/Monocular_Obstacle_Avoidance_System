@@ -15,12 +15,12 @@ echo "Starting transfer from remote server..."
 
 # 4. Command 1: Sync the visualization artifacts folder
 # (Trailing slash on source copies contents into the target)
-rsync -avz -e "ssh -p 15996" \
+rsync -avz -e "ssh -p 37099" \
   root@184.144.255.168:/root/Monocular_Obstacle_Avoidance_System/logs/visualization_artifacts/ \
   "$TARGET_DIR/visualization_artifacts/"
 
 # 5. Command 2: Sync the edge_session.jsonl file
-rsync -avz -e "ssh -p 15996" \
+rsync -avz -e "ssh -p 37099" \
   root@184.144.255.168:/root/Monocular_Obstacle_Avoidance_System/logs/edge_session.jsonl \
   "$TARGET_DIR/"
 
