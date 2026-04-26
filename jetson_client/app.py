@@ -129,7 +129,13 @@ async def run_sender(config: dict[str, Any], clean_log: bool = True) -> None:
             },
         )
 
-    sender = pc.addTrack(CameraVideoTrack(adapter))
+    sender = pc.addTrack(
+        CameraVideoTrack(
+            adapter,
+            width=cam_cfg.get("width"),
+            height=cam_cfg.get("height"),
+        )
+    )
 
     # Prefer VP8: libvpx with deadline=realtime + lag-in-frames=0 encodes faster
     # per-frame than libx264 on CPU, reducing sender-side encoding latency.
