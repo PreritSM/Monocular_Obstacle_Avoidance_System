@@ -89,6 +89,280 @@ The TensorRT `.plan` is GPU-architecture-specific and must be built on the same 
 
 ---
 
+## Fusion Pipeline
+
+The fusion pipeline runs entirely inside the Edge Gateway on every received frame. It has three sequential stages — YOLO decode, Depth decode, and Overlap fusion — where the first two are dispatched in parallel to Triton and the third runs after both complete.
+
+### Stage Overview
+
+```
+                        ┌─────────────────────────────────────────────────────┐
+                        │               TRITON INFERENCE SERVER               │
+                        │                  (asyncio.gather)                   │
+                        │                                                     │
+  Camera Frame          │  ┌─────────────────────────┐  ~16 ms               │
+  640×480 BGR           │  │   YOLO  TensorRT FP16   │◄── resize 640→512     │
+       │                │  │   input:  (1,3,512,512) │    BGR→RGB, /255      │
+       │   ┌────────────┤  │   output0:(1,8400,38)   │                       │
+       │   │            │  │   output1:(1,32,64,64)  │                       │
+       ├───┤            │  └────────────┬────────────┘                       │
+       │   │            │               │                                     │
+       │   │            │  ┌────────────▼────────────┐  ~22 ms               │
+       │   └────────────┤  │  Depth Anything V2 INT8 │◄── resize 640→518     │
+                        │  │   input:  (1,3,518,518) │    BGR→RGB            │
+                        │  │   output: (1,1,518,518) │                       │
+                        │  └────────────┬────────────┘                       │
+                        └──────────────┬┴────────────────────────────────────┘
+                                       │ both results land here ~24 ms wall time
+                                       ▼
+                        ┌─────────────────────────────┐
+                        │       YOLO DECODE   ~3 ms   │
+                        │  conf filter ≥ 0.40         │
+                        │  top-K ≤ 10 by confidence   │
+                        │  mask = sigmoid(coeff@proto) │
+                        │  resize 64→512 (nearest)    │
+                        │  binarize ≥ 0.60            │
+                        │  AND bbox clip              │
+                        │  → K masks (512×512 bool)   │
+                        └──────────────┬──────────────┘
+                                       │
+                        ┌─────────────────────────────┐
+                        │      DEPTH DECODE   ~1 ms   │
+                        │  squeeze → (518×518) f32    │
+                        │  percentiles: p10, p50, p90 │
+                        │  → raw depth map + scene    │
+                        │    dynamic range anchors    │
+                        └──────────────┬──────────────┘
+                                       │
+                        ┌─────────────────────────────┐
+                        │    OVERLAP FUSION  ~1.4 ms  │
+                        │  per object:                │
+                        │  mask 512→480 (nearest)     │
+                        │  sample depth map (518×518) │
+                        │  median, p10, p90, spread   │
+                        │  normalize vs scene range   │
+                        │  assign near / mid / far    │
+                        └──────────────┬──────────────┘
+                                       │
+                               JSON metadata
+                           sent over DataChannel
+```
+
+---
+
+### YOLO Decode — Internal Steps
+
+```
+  output0 (1,8400,38)          output1 (1,32,64,64)
+  [x1 y1 x2 y2 conf cls c×32]  [prototype feature maps]
+        │                               │
+        ▼                               │
+  squeeze → (8400,38)          squeeze → (32,64,64)
+        │                               │
+        ▼                               │
+  conf[:,4] ≥ 0.40                      │
+  filter valid anchors                  │
+        │                               │
+        ▼                               │
+  argsort desc → top 10                 │
+        │                               │
+        ▼                               │
+  coeffs = selected[:,6:38]             │
+  shape: (K,32)                         │
+        │                               │
+        └──────────────┬────────────────┘
+                       ▼
+          proto_flat = proto.reshape(32, 4096)
+          masks = sigmoid( coeffs @ proto_flat )
+          shape: (K, 64, 64)
+                       │
+                       ▼
+          crop to bbox in proto space
+          (sx = 64/512,  sy = 64/512)
+                       │
+                       ▼
+          nearest-neighbour resize
+          64×64  ──────────────►  512×512
+                       │
+                       ▼
+          binarize  ≥ 0.60  →  bool mask
+                       │
+                       ▼
+          AND with hard bbox clip (512×512)
+                       │
+                       ▼
+          discard if pixel_count == 0
+                       │
+                       ▼
+     K objects, each with mask (512×512 bool)
+     + class_id, class_name, confidence, bbox_xyxy
+```
+
+---
+
+### Depth Decode — Internal Steps
+
+```
+  output tensor  select_36
+  shape: (1,1,518,518)  float32
+        │
+        ▼
+  squeeze all leading dims
+  → depth_map (518,518)  float32
+  (raw relative inverse depth — not metric)
+        │
+        ├──► p10 = percentile(depth_map, 10)  ← scene near anchor
+        ├──► p50 = percentile(depth_map, 50)  ← scene median
+        └──► p90 = percentile(depth_map, 90)  ← scene far anchor
+                    spread = p90 − p10
+
+  Output: raw depth_map  +  {p10, p50, p90, spread}
+  (depth_map NOT normalised here — raw values passed to fusion)
+```
+
+---
+
+### Overlap Fusion — Internal Steps (per object)
+
+```
+  YOLO mask (512×512 bool)               depth_map (518×518 f32)
+  scene frame: 640×480                   scene p10, p90
+        │                                      │
+        ▼                                      │
+  nearest-neighbour resize                     │
+  512×512  ──────────────►  640×480            │
+        │                                      │
+        ▼                                      │
+  ys, xs = np.where(mask_frame)                │
+  all pixel coords of object in frame space    │
+        │                                      │
+        ▼                                      │
+  map to depth coords (integer division)       │
+  dy = ys * 518 // 480                         │
+  dx = xs * 518 // 640                         │
+        │                                      │
+        └──────────────┬───────────────────────┘
+                       ▼
+          values = depth_map[dy, dx]
+          remove NaN / inf
+                       │
+                       ▼
+          depth_median = median(values)     ← primary depth estimate
+          depth_p10    = percentile(10)     ← near edge of object
+          depth_p90    = percentile(90)     ← far edge of object
+          spread       = p90 − p10         ← depth variance across object
+                       │
+                       ▼
+          ┌─────────────────────────────────────────┐
+          │      PER-FRAME NORMALIZATION             │
+          │                                         │
+          │  denom      = max(scene_p90−scene_p10,  │
+          │                   1e-6)                 │
+          │  depth_norm = (depth_median − scene_p10)│
+          │               / denom                   │
+          │                                         │
+          │  maps object depth to [0.0, 1.0]        │
+          │  relative to the scene dynamic range    │
+          └──────────────────┬──────────────────────┘
+                             │
+                             ▼
+          ┌──────────────────────────────────────────────────────┐
+          │                BAND ASSIGNMENT                        │
+          │                                                      │
+          │  0.0 ──────────[0.35]───────────[0.65]────────── 1.0│
+          │       ◄─ near ─►       ◄─ mid ─►       ◄─ far ─►   │
+          │                                                      │
+          │  depth_norm ≤ 0.35  →  "near"   (closest 35%)       │
+          │  depth_norm ≥ 0.65  →  "far"    (furthest 35%)      │
+          │  otherwise          →  "mid"    (middle 30%)         │
+          └──────────────────────────────────────────────────────┘
+                             │
+                             ▼
+          per-object output:
+          { class_name, confidence, bbox_xyxy,
+            depth_median, depth_p10, depth_p90,
+            depth_spread_p90_p10, depth_norm,
+            depth_band, pixel_count }
+```
+
+---
+
+### Coordinate Spaces
+
+Four distinct pixel spaces are active simultaneously. All remapping uses nearest-neighbour integer division — no scipy or PIL dependency.
+
+```
+  ┌──────────────┐   resize    ┌──────────────┐   resize   ┌──────────────┐
+  │  Camera      │  640→512   │  YOLO Input  │  64→512   │  Prototype   │
+  │  Frame       │ ──────────► │  512×512     │ ◄──────── │  Grid        │
+  │  640×480     │             │  (bbox, mask)│           │  64×64       │
+  └──────┬───────┘             └──────────────┘           └──────────────┘
+         │
+         │  mask resize 512→480
+         ▼
+  ┌──────────────┐   index     ┌──────────────┐
+  │  Frame-space │  mapping   │  Depth Map   │
+  │  Mask        │ ──────────► │  518×518     │
+  │  480×640     │  dy,dx int  │  (sampled)   │
+  └──────────────┘  division  └──────────────┘
+```
+
+---
+
+### End-to-End Latency Waterfall
+
+```
+  Jetson captures frame
+  capture_ts_ms ──────────────────────────────────────────────────────────────┐
+                │                                                              │
+                │◄──── ~34 ms ────►│                                          │
+                │  WebRTC encode   │                                          │
+                │  + UDP transit   │ edge_rx_ts_ms                            │
+                │                  │                                          │
+                │                  │◄──────────── ~38 ms ──────────────►│    │
+                │                  │  ┌─ YOLO infer  ~16 ms ─┐          │    │
+                │                  │  │ (parallel)            │ decode   │    │
+                │                  │  └─ Depth infer ~22 ms ─┘ + fuse   │    │
+                │                  │                          │  ~5 ms   │    │
+                │                  │                          │          │    │
+                │                  │                          │ inference_ts_ms│
+                │                  │                          │               │
+                └──────────────────┴──────────────────────────┘               │
+                               age_ms = inference_ts_ms − capture_ts_ms       │
+                               median: 72 ms  │  p95: 98 ms  │  p99: 118 ms  │
+                                                                               │
+  ┌ stale boundary ────────────────────────────────── 120 ms ─────────────────┤
+  │                                                                            │
+  │  DataChannel send → Jetson rx_time_ms  (not included in age_ms)           │
+  └────────────────────────────────────────────────────────────────────────────┘
+
+  Latency segments (median):
+  ┌───────────────────────────────────────────────────────────────────────┐
+  │  encode + transit  │      parallel inference      │  decode + fuse   │
+  │      ~34 ms        │  YOLO 16ms ┐                 │      ~5 ms       │
+  │                    │  Depth 22ms┘ wall ~24 ms     │                  │
+  ├────────────────────┼──────────────────────────────┼──────────────────┤
+  │◄──────────────────────────── age_ms ≈ 72 ms ──────────────────────►│
+  └───────────────────────────────────────────────────────────────────────┘
+
+  Per-step breakdown:
+  ┌────────────────────────────┬──────────┬─────────────────────────────┐
+  │ Step                       │ Duration │ Where measured              │
+  ├────────────────────────────┼──────────┼─────────────────────────────┤
+  │ WebRTC encode + transit    │  ~34 ms  │ capture_to_edge_rx_ms       │
+  │ YOLO Triton infer (TRT)    │  ~16 ms  │ timings_ms.yolo.inference_ms│
+  │ Depth Triton infer (ONNX)  │  ~22 ms  │ timings_ms.depth.inference_ms│
+  │ Parallel wall time         │  ~24 ms  │ parallel_window_ms          │
+  │ YOLO decode (post-proc)    │   ~3 ms  │ timings_ms.yolo.decode_ms   │
+  │ Depth decode (percentiles) │   ~1 ms  │ timings_ms.depth.decode_ms  │
+  │ Overlap fusion             │  ~1.4 ms │ timings_ms.fusion_ms        │
+  ├────────────────────────────┼──────────┼─────────────────────────────┤
+  │ Total  age_ms  (median)    │  ~72 ms  │ inference_ts − capture_ts   │
+  └────────────────────────────┴──────────┴─────────────────────────────┘
+```
+
+---
+
 ## System Guardrails and Thresholds
 
 All thresholds are codified in [`configs/acceptance.thresholds.yaml`](configs/acceptance.thresholds.yaml) and enforced by `tools/analyze_metrics.py` at the end of each session.
